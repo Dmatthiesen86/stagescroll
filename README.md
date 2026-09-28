@@ -3,7 +3,21 @@
 Personal gig app: chord sheets, setlists, auto-scroll, and **voice follow** (karaoke-style
 tracking of where you are in the lyrics).
 
-## Run it
+## Install on iPhone / iPad / computer (works offline)
+
+Live at **https://dmatthiesen86.github.io/stagescroll/**
+
+- **iPhone / iPad**: open the link in **Safari** → Share → **Add to Home Screen**. Launch it
+  from the home-screen icon once while online; after that it runs with no internet.
+- **Computer**: open the link in Chrome or Edge → install icon in the address bar → Install.
+
+Each device keeps its **own** song library. To copy songs between devices: Export on one,
+send the `.json` file over (AirDrop, email, Files), then Import on the other.
+
+**Publishing changes**: bump `CACHE` in `sw.js`, commit, push. Devices pick up the new
+version the next time the app is opened with internet (it applies on the launch after).
+
+## Run it locally
 
 ```bash
 cd StageScroll
