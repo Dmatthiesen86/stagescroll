@@ -31,8 +31,13 @@ Open http://localhost:5173 in **Chrome or Edge** (voice follow needs their speec
 - **Songs**: New song → paste a song. If you pasted Ultimate-Guitar style text (chords on the
   line above the lyrics), press **Convert chords-over-lyrics**. Add `{duration: 3:30}` and the
   default scroll speed is set so the song scrolls over that duration.
-- **Import**: `.cho` / `.chordpro` / `.txt` files, or a `.json` backup. **Export** often — songs
-  live only in this browser's storage.
+- **Import**: Ultimate Guitar **PDFs**, `.cho` / `.chordpro` / `.txt` files, or a `.json` backup.
+  **Export** often — songs live only in this browser's storage.
+- **PDF import**: UG's PDFs are pictures of the page, so the app reads them with built-in text
+  recognition (OCR, bundled — works offline, ~3 s per page). It picks up title / artist / key,
+  skips the chord-diagram page, and repairs common misreads of bold chord names. Guitar tab
+  doesn't OCR well, so tab areas are kept as boxed reference blocks. A single PDF opens in the
+  editor afterwards — give it a quick look before the gig.
 - **Setlists**: build, reorder, play. Tapping a song in a set starts from there.
 
 ### Perform controls
@@ -71,4 +76,6 @@ scroll carries you through solos and instrumental breaks.
 - `js/follow.js` — speech recognition + fuzzy lyric alignment
 - `js/app.js` — UI: library, setlists, editor, perform view
 - `js/store.js` — localStorage persistence, import/export
+- `js/pdfimport.js` — PDF → ChordPro (pdf.js text layer, or Tesseract OCR for image PDFs)
+- `js/vendor/` — pdf.js (Apache-2.0) and Tesseract.js (Apache-2.0), bundled for offline use
 - `sw.js` — offline cache (works once hosted over HTTPS or on localhost)

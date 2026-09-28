@@ -1,0 +1,246 @@
+// PDF import. Ultimate Guitar's PDF downloads are *pictures* of the page, so pages without a
+// text layer are rendered and run through OCR (Tesseract, bundled so it works offline).
+// Either way, words are placed back on a character grid from their positions on the page,
+// which recreates the chords-above-lyrics layout for plainToChordPro().
+import { plainToChordPro, isChord } from './chordpro.js';
+
+const VENDOR = new URL('./vendor/', import.meta.url).href;
+const OCR_SCALE = 3; // ~30px text height on a letter/A4 page — Tesseract's sweet spot
+
+export async function pdfToChordPro(file, onProgress = () => {}) {
+  onProgress('Opening PDF…');
+  const pdfjs = await import('./vendor/pdf.min.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc = VENDOR + 'pdf.worker.min.mjs';
+  const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+  const doc = await task.promise;
+  const lines = [];
+  let ocr = null;
+  try {
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const items = (await page.getTextContent()).items.filter(i => i.str && i.str.trim());
+      if (items.length > 5) {
+        lines.push(...textLayerLines(items));
+      } else {
+        if (!ocr) { onProgress('Loading text recognition…'); ocr = await createOcr(); }
+        onProgress(`Reading page ${p} of ${doc.numPages}…`);
+        lines.push(...await ocrLines(ocr, page));
+      }
+      lines.push('');
+    }
+  } finally {
+    await ocr?.terminate();
+    task.destroy();
+  }
+  return ugTextToChordPro(lines, file.name.replace(/\.pdf$/i, ''));
+}
+
+// ---- text-layer PDFs (exported from a word processor, "print to PDF" of a web page, etc.)
+function textLayerLines(items) {
+  const words = items.map(i => ({
+    text: i.str.replace(/\s+$/, ''),
+    x0: i.transform[4],
+    x1: i.transform[4] + i.width,
+    y: -i.transform[5], // PDF y grows upward
+    h: Math.abs(i.transform[3]) || i.height || 10,
+  }));
+  const rows = [];
+  for (const w of words.sort((a, b) => a.y - b.y)) {
+    const row = rows.find(r => Math.abs(r.y - w.y) < w.h * 0.4);
+    if (row) row.words.push(w); else rows.push({ y: w.y, h: w.h, words: [w] });
+  }
+  return gridLines(rows);
+}
+
+// ---- image PDFs: render the page and OCR it
+async function createOcr() {
+  const { default: Tesseract } = await import('./vendor/ocr/tesseract.esm.min.js');
+  const worker = await Tesseract.createWorker('eng', 1, {
+    workerPath: VENDOR + 'ocr/worker.min.js',
+    corePath: VENDOR + 'ocr/',
+    langPath: VENDOR + 'ocr/',
+    workerBlobURL: false,
+    cacheMethod: 'none', // the service worker already keeps these files offline
+  });
+  // PSM 6 = one uniform block of text: keeps chord lines and lyric lines as separate rows.
+  await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+  return worker;
+}
+
+async function ocrLines(worker, page) {
+  const vp = page.getViewport({ scale: OCR_SCALE });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.floor(vp.width);
+  canvas.height = Math.floor(vp.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // 'print' intent renders without waiting on animation frames, so it can't stall if the screen is backgrounded.
+  await page.render({ canvasContext: ctx, viewport: vp, intent: 'print' }).promise;
+  const { data } = await worker.recognize(canvas, {}, { blocks: true });
+  canvas.width = canvas.height = 0; // free memory promptly on phones
+
+  const rows = [];
+  for (const block of data.blocks || []) {
+    for (const para of block.paragraphs) {
+      for (const line of para.lines) {
+        const words = line.words.filter(w => w.text.trim()).map(w => ({
+          text: w.text, x0: w.bbox.x0, x1: w.bbox.x1, y: line.bbox.y0, h: line.bbox.y1 - line.bbox.y0,
+        }));
+        if (words.length) rows.push({ y: line.bbox.y0, h: line.bbox.y1 - line.bbox.y0, words });
+      }
+    }
+  }
+  return gridLines(rows.sort((a, b) => a.y - b.y));
+}
+
+// Place words on a monospace grid using their x positions, and turn big vertical gaps into
+// blank lines. Chord sheets are laid out in fixed-width fonts, so this recovers alignment.
+function gridLines(rows) {
+  const all = rows.flatMap(r => r.words);
+  if (!all.length) return [];
+  const widths = all.filter(w => w.text.length >= 2).map(w => (w.x1 - w.x0) / w.text.length).sort((a, b) => a - b);
+  const cw = widths[widths.length >> 1] || 10;
+  const left = Math.min(...all.map(w => w.x0));
+  const heights = rows.map(r => r.h).sort((a, b) => a - b);
+  const lineH = heights[heights.length >> 1] || 20;
+
+  const out = [];
+  let prevY = null;
+  for (const r of rows) {
+    if (prevY !== null && r.y - prevY > lineH * 2.3) out.push('');
+    prevY = r.y;
+    let s = '';
+    for (const w of r.words.sort((a, b) => a.x0 - b.x0)) {
+      let col = Math.max(0, Math.round((w.x0 - left) / cw));
+      if (s.length && col <= s.length) col = s.length + 1;
+      s = s.padEnd(col) + w.text;
+    }
+    out.push(s);
+  }
+  return out;
+}
+
+// ---- OCR chord repair
+// Bold chord names are OCR's weak spot ("C" → "Cc" / "€", "Dm7" → "bm7"). Chord names that
+// OCR'd cleanly elsewhere in the document (UG lists every chord up top) are used to repair
+// near-misses on lines that are already mostly chords.
+function lev(a, b) {
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]; row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return row[b.length];
+}
+
+const FILLER = /^(\||x\d+|\d+x|N\.?C\.?|-+|%)$/i;
+
+function repairChordLines(lines) {
+  const known = new Map(); // chord -> count
+  for (const l of lines) {
+    const toks = l.trim().split(/\s+/).filter(Boolean);
+    const chords = toks.filter(isChord);
+    if (chords.length && chords.length >= toks.length / 2) chords.forEach(c => known.set(c, (known.get(c) || 0) + 1));
+  }
+  const fix = t => {
+    if (isChord(t) || FILLER.test(t)) return t;
+    if (t === '€') return 'C';
+    const dbl = t.match(/^([A-G])([a-g])$/);
+    if (dbl && dbl[2].toUpperCase() === dbl[1]) return dbl[1];      // "Cc" → "C"
+    let best = null, bestScore = Infinity;
+    for (const [c, n] of known) {
+      const d = c.toLowerCase() === t.toLowerCase() ? 0 : lev(c, t);
+      const score = d - Math.min(n, 20) / 100;                      // ties go to the commoner chord
+      if (d <= 1 && score < bestScore) { best = c; bestScore = score; }
+    }
+    return best;
+  };
+  return lines.map(l => {
+    const toks = [...l.matchAll(/\S+/g)];
+    if (!toks.length) return l;
+    const valid = toks.filter(m => isChord(m[0]) || FILLER.test(m[0])).length;
+    if (valid === toks.length || valid < toks.length / 2) return l;
+    const fixed = toks.map(m => fix(m[0]));
+    if (fixed.some(f => f === null)) return l;
+    let out = '';
+    toks.forEach((m, i) => { out = out.padEnd(m.index) + (out.length > m.index ? ' ' : '') + fixed[i]; });
+    return out;
+  });
+}
+
+// ---- Tab blocks
+// OCR mangles guitar tab (long dash runs), so tab areas are boxed as {start_of_tab} blocks:
+// shown monospaced for reference, and kept out of the lyrics that voice follow listens for.
+const isChordBars = l => l.trim().split(/\s+/).every(t => isChord(t) || t === '|'); // "| C  Cmaj7 | F |"
+const isTabby = l => !isChordBars(l) && ((l.match(/\|/g) || []).length >= 2 || /-{3,}/.test(l) || /\d\s*&\s*\d/.test(l));
+function isJunk(l) {
+  const toks = l.trim().split(/\s+/).filter(Boolean);
+  if (!toks.length) return false;
+  const odd = toks.filter(t => !/^[A-Za-z][a-z']*[,.!?]?$/.test(t) || !/[aeiouy]/i.test(t)).length;
+  return odd / toks.length >= 0.4 && !isChord(toks[0]);
+}
+
+function groupTabs(lines) {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!isTabby(lines[i])) { out.push(lines[i]); continue; }
+    let j = i;
+    const block = [];
+    while (j < lines.length && lines[j].trim() && (isTabby(lines[j]) || isJunk(lines[j]))) block.push(lines[j++]);
+    // Pull in junk lines just above, and the chord line that sits over the first bar.
+    while (out.length && out[out.length - 1].trim() && isJunk(out[out.length - 1])) block.unshift(out.pop());
+    const prev = out[out.length - 1];
+    if (prev && prev.trim() && isChordBars(prev)) block.unshift(out.pop());
+    out.push('{start_of_tab}', ...block, '{end_of_tab}');
+    i = j - 1;
+  }
+  return out;
+}
+
+// ---- Ultimate Guitar specific clean-up
+function ugTextToChordPro(rawLines, fallbackTitle) {
+  const lines = repairChordLines(rawLines
+    .map(l => l.replace(/[—–]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+$/, ''))
+    .filter(l => !/^\s*Page \d+\s*\/\s*\d+\s*$/i.test(l))
+    .filter(l => !/^\s*\S{12,}\s*$/.test(l) || new Set(l.trim()).size > 4)); // "*******" rules OCR'd as "khkkhk…"
+
+  let title = '', artist = '', key = '', capo = '';
+  for (const raw of lines.slice(0, 40)) {
+    const l = raw.trim().replace(/\s+/g, ' ');
+    const t = l.match(/^(.+?)\s+(?:Chords|Tabs?|Ukulele Chords|Bass Tabs?|Chords & Lyrics)\s+by\s+(.+)$/i);
+    // Trailing 1–2 character tokens are OCR noise from the UG logo at the right edge.
+    if (t && !title) { title = t[1].trim(); artist = t[2].replace(/(\s+\S{1,2})+$/, '').trim(); }
+    const k = l.trim().match(/^Key:\s*([A-G][#b]?m?)\b/i);
+    if (k && !key) key = k[1];
+    const c = l.trim().match(/^Capo:\s*(.+)$/i);
+    if (c && !capo) capo = c[1].replace(/\s*fret.*$/i, '');
+  }
+
+  // UG puts chord diagrams / strumming patterns before the song; the song starts at the first [Section].
+  let start = lines.findIndex(l => /^\s*\[[^\]]+\]\s*$/.test(l));
+  if (start < 0) start = 0;
+  const body = groupTabs(lines.slice(start)).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  const head = [`{title: ${title || fallbackTitle || 'Untitled'}}`];
+  if (artist) head.push(`{artist: ${artist}}`);
+  if (key) head.push(`{key: ${key}}`);
+  if (capo) head.push(`{capo: ${capo}}`);
+  head.push('# Imported from PDF — check chords against the original.');
+  return head.join('\n') + '\n\n' + tidySpacing(plainToChordPro(body));
+}
+
+// Once chords are inline, runs of spaces in lyric lines are just OCR/layout noise.
+function tidySpacing(cp) {
+  let inTab = false;
+  return cp.split('\n').map(l => {
+    if (/^\{\s*(start_of_tab|sot)\b/i.test(l)) inTab = true;
+    if (/^\{\s*(end_of_tab|eot)\b/i.test(l)) inTab = false;
+    if (inTab || /^\s*[{#]/.test(l) || !/\[[^\]]+\]/.test(l)) return l;
+    return l.trim().replace(/ {2,}/g, ' ');
+  }).join('\n');
+}

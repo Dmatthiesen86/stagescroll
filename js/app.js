@@ -80,8 +80,8 @@ function shell(active, inner) {
       </nav>
       <div class="spacer"></div>
       <button class="btn ghost" id="exportBtn" title="Download a backup of all songs and setlists">Export</button>
-      <label class="btn ghost" title="Import a backup (.json) or song files (.cho, .chordpro, .txt)">Import
-        <input type="file" id="importFile" multiple accept=".json,.cho,.chopro,.chordpro,.crd,.pro,.txt" hidden>
+      <label class="btn ghost" title="Import Ultimate Guitar PDFs, song files (.cho, .chordpro, .txt) or a backup (.json)">Import
+        <input type="file" id="importFile" multiple accept=".pdf,application/pdf,.json,.cho,.chopro,.chordpro,.crd,.pro,.txt" hidden>
       </label>
     </header>
     <main class="page">${inner}</main>`;
@@ -99,23 +99,48 @@ function exportBackup() {
 }
 
 async function importFiles(files) {
-  let songs = 0, sets = 0;
+  let songs = 0, sets = 0, lastSong = null, pdfs = 0;
   const errors = [];
-  for (const f of files) {
-    try {
-      const text = await f.text();
-      if (/\.json$/i.test(f.name)) {
-        const r = store.importData(text);
-        songs += r.songs; sets += r.setlists;
-      } else {
-        store.upsertSong({ chordpro: store.toChordPro(text, f.name.replace(/\.[^.]+$/, '')) });
-        songs++;
-      }
-    } catch (e) { errors.push(`${f.name}: ${e.message}`); }
-  }
+  const status = busy('Importing…');
+  try {
+    for (const f of files) {
+      try {
+        if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
+          const { pdfToChordPro } = await import('./pdfimport.js');
+          const cp = await pdfToChordPro(f, msg => status(`${f.name}: ${msg}`));
+          lastSong = store.upsertSong({ chordpro: cp });
+          songs++; pdfs++;
+          continue;
+        }
+        const text = await f.text();
+        if (/\.json$/i.test(f.name)) {
+          const r = store.importData(text);
+          songs += r.songs; sets += r.setlists;
+        } else {
+          lastSong = store.upsertSong({ chordpro: store.toChordPro(text, f.name.replace(/\.[^.]+$/, '')) });
+          songs++;
+        }
+      } catch (e) { errors.push(`${f.name}: ${e.message}`); }
+    }
+  } finally { status.done(); }
   toast(`Imported ${songs} song${songs === 1 ? '' : 's'}${sets ? ` and ${sets} setlist${sets === 1 ? '' : 's'}` : ''}`);
   if (errors.length) alert('Some files failed:\n' + errors.join('\n'));
-  route();
+  // A single PDF goes straight to the editor so OCR mistakes can be fixed before a gig.
+  if (pdfs === 1 && files.length === 1 && lastSong) go(`#/song/${lastSong.id}`);
+  else route();
+}
+
+// Blocking progress overlay for slow work (PDF text recognition).
+function busy(msg) {
+  const el = document.createElement('div');
+  el.className = 'busy';
+  el.innerHTML = '<div class="busy-card"><div class="spinner"></div><div class="busy-msg"></div></div>';
+  const text = el.querySelector('.busy-msg');
+  text.textContent = msg;
+  document.body.appendChild(el);
+  const update = m => { text.textContent = m; };
+  update.done = () => el.remove();
+  return update;
 }
 
 // ---------------------------------------------------------------- library

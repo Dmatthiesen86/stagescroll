@@ -47,7 +47,15 @@ export function plainToChordPro(text) {
     const line = lines[i];
     const trimmed = line.trim();
 
-    if (/^\{.*\}$/.test(trimmed)) { out.push(trimmed); continue; }
+    if (/^\{.*\}$/.test(trimmed)) {
+      out.push(trimmed);
+      // Existing tab blocks pass through verbatim.
+      if (/^\{\s*(start_of_tab|sot)\b/i.test(trimmed)) {
+        while (++i < lines.length && !/^\s*\{\s*(end_of_tab|eot)\b/i.test(lines[i])) out.push(lines[i].replace(/\s+$/, ''));
+        if (i < lines.length) out.push(lines[i].trim());
+      }
+      continue;
+    }
 
     const hdr = trimmed.match(HEADER_RE);
     if (hdr && !isChord(hdr[1])) {
