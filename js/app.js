@@ -1,7 +1,8 @@
 import * as store from './store.js';
 import { parseChordPro, plainToChordPro, transposeChord, keyPrefersFlats, isChord } from './chordpro.js';
 import { VoiceFollower } from './follow.js';
-import { BarPlayer } from './bars.js';
+import { TimelinePlayer, Clock, parseAt } from './timeline.js';
+import { chartBars, parseLyrics, buildMerged } from './lyricsync.js';
 
 const app = document.getElementById('app');
 const S = store.settings;
@@ -24,6 +25,7 @@ function route() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   const [a, b, c, d] = parts;
   if (a === 'song' && b) return viewEditor(b === 'new' ? null : b);
+  if (a === 'sync' && b) return viewSync(b);
   if (a === 'sets' && b) return viewSetlist(b);
   if (a === 'sets') return viewSetlists();
   if (a === 'play' && b === 'song' && c) return viewPerform([c], 0, null);
@@ -313,6 +315,7 @@ function viewEditor(id) {
     <div class="toolbar">
       <h2 class="grow">${song ? 'Edit song' : 'New song'}</h2>
       <button class="btn" id="convert" title="Turn Ultimate-Guitar style chords-above-lyrics into ChordPro">Convert chords-over-lyrics</button>
+      ${song && (song.sourceChart || /\|\s*\[/.test(song.chordpro)) ? `<a class="btn" href="#/sync/${song.id}" title="Paste lyrics and tap along to line them up with the bars">Add lyrics (tap along)</a>` : ''}
       ${song ? '<button class="btn danger" id="del">Delete</button>' : ''}
       <button class="btn" id="savePlay">Save &amp; play</button>
       <button class="btn primary" id="save">Save</button>
@@ -354,6 +357,200 @@ A[G]mazing [G7]grace      ← chord goes right before the syllable</pre>
   cleanup = () => window.removeEventListener('beforeunload', beforeUnload);
 }
 
+// ---------------------------------------------------------------- lyrics tap-along sync
+function viewSync(id) {
+  const song = store.getSong(id);
+  if (!song) return go('#/');
+  const chartText = song.sourceChart || song.chordpro;
+  const chart = parseChordPro(chartText);
+  const bars = chartBars(chart);
+  if (!bars.length) { toast('This song has no bar chart to sync lyrics to.'); return go(`#/song/${id}`); }
+  const bpb = +(String(chart.meta.time || '').match(/^(\d+)\s*\//) || [])[1] || 4;
+  let bpm = song.bpm || +chart.meta.tempo || 100;
+  let sections = [], taps = [];
+  let lyricsText = song.lyricsText || '';
+  const clock = new Clock();
+  let raf = 0;
+  let onKey = () => {};
+  const offKey = () => document.removeEventListener('keydown', onKey);
+  cleanup = () => { cancelAnimationFrame(raf); clock.dispose(); offKey(); delete window.__stagescroll; };
+
+  // Step 1: paste lyrics
+  function paste() {
+    cancelAnimationFrame(raf); clock.stop(); offKey();
+    shell('songs', `
+      <div class="toolbar"><h2 class="grow">Add lyrics — ${esc(song.title)}</h2>
+        <a class="btn" href="#/play/song/${id}">Cancel</a></div>
+      <p class="sub wrap">Paste the lyrics the way you sing them: one sung line per line, and a blank line between
+        sections. Labels like <b>[Chorus]</b> are optional. If a chorus is sung three times, paste it three times.
+        Next you'll tap along as each line starts. ${bars.length} bars at ${bpm} bpm.</p>
+      <textarea id="lyr" class="lyrics-input" spellcheck="false" placeholder="[Verse 1]&#10;First line you sing&#10;Second line&#10;&#10;[Chorus]&#10;…">${esc(lyricsText)}</textarea>
+      <div class="toolbar"><span class="sub grow" id="lcount"></span>
+        <button class="btn primary" id="go">Start tap-along →</button></div>`);
+    const ta = app.querySelector('#lyr'), countEl = app.querySelector('#lcount');
+    const upd = () => {
+      const s = parseLyrics(ta.value);
+      const n = s.reduce((k, x) => k + x.lines.length, 0);
+      countEl.textContent = n ? `${n} lines in ${s.length} section${s.length === 1 ? '' : 's'}: ${s.map(x => x.label).join(', ')}` : '';
+    };
+    ta.oninput = upd;
+    upd();
+    app.querySelector('#go').onclick = () => {
+      lyricsText = ta.value;
+      sections = parseLyrics(lyricsText);
+      if (!sections.length) { toast('Paste some lyrics first'); return; }
+      store.upsertSong({ id, lyricsText });
+      taps = [];
+      tapAlong();
+    };
+  }
+
+  // Step 2: tap along
+  function tapAlong() {
+    const lines = sections.flatMap(s => s.lines.map((text, k) => ({ text, label: k === 0 ? s.label : '' })));
+    app.innerHTML = `
+      <div class="perform sync">
+        <header class="pbar">
+          <button class="btn ghost icon" id="sBack" title="Back to lyrics (Esc)">←</button>
+          <div class="ptitle grow"><div class="t">Tap along — ${esc(song.title)}</div>
+            <div class="sub">Tap the screen, Space or your pedal the moment you start singing each line</div></div>
+          <div class="grp" title="Tempo while syncing — slow it down if you like; the timing still fits the real tempo">
+            <button class="btn icon" id="sSlower">−</button><span class="val" id="sBpm"></span><button class="btn icon" id="sFaster">+</button>
+          </div>
+          <button class="btn ghost" id="sClick" title="Metronome click while tapping">Click</button>
+        </header>
+        <div class="sync-body" id="sBody">
+          <div class="sync-status"><span class="sub" id="sBar"></span><span class="sync-chord" id="sChord"></span>
+            <span class="beats" id="sBeats">${'<i></i>'.repeat(bpb)}</span></div>
+          <div class="sync-lines">
+            <div class="s-prev" id="sPrev"></div>
+            <div class="s-label" id="sLabel"></div>
+            <div class="s-next" id="sNext"></div>
+            <div class="s-after" id="sAfter"></div>
+          </div>
+          <div class="sub" id="sProg"></div>
+        </div>
+        <div class="countin" id="countin" hidden></div>
+        <footer class="pctl">
+          <button class="btn" id="sUndo" title="Undo last tap and rewind (← / Backspace)">↶ Undo</button>
+          <button class="btn primary big tapbtn" id="sTap">▶ Count in</button>
+          <button class="btn" id="sDone" title="Build the song from your taps">Finish</button>
+        </footer>
+      </div>`;
+    const $ = sel => app.querySelector(sel);
+    const countEl = $('#countin');
+    let shownCount = 0;
+
+    const draw = () => {
+      const i = taps.length;
+      $('#sPrev').textContent = lines[i - 1]?.text || '';
+      $('#sLabel').textContent = lines[i]?.label || '';
+      $('#sNext').textContent = lines[i]?.text || 'All lines tapped — press Finish';
+      $('#sAfter').textContent = lines[i + 1]?.text || '';
+      $('#sProg').textContent = `Line ${Math.min(i + 1, lines.length)} of ${lines.length}`;
+      $('#sBpm').textContent = `${bpm} bpm`;
+      $('#sClick').classList.toggle('on', S.syncClick !== false);
+      $('#sTap').textContent = clock.running ? 'TAP' : taps.length ? '▶ Continue' : '▶ Count in';
+      $('#sDone').classList.toggle('primary', i >= lines.length);
+    };
+
+    const startFrom = beat => {
+      clock.start(beat, bpm, bpb, { metronome: S.syncClick !== false });
+      draw();
+    };
+    const tap = () => {
+      if (!clock.running) { startFrom(taps.length ? Math.floor(taps[taps.length - 1] / bpb) * bpb : 0); return; }
+      if (clock.countIn() || taps.length >= lines.length) return;
+      const b = Math.max(0, Math.round(clock.beat() * 2) / 2); // nearest half beat
+      if (taps.length && b <= taps[taps.length - 1]) return;
+      taps.push(b);
+      draw();
+    };
+    const undo = () => {
+      if (!taps.length) return;
+      taps.pop();
+      // Rewind to the bar of the previous line so the next one can be tapped again.
+      startFrom(taps.length ? Math.floor(taps[taps.length - 1] / bpb) * bpb : 0);
+    };
+    const finish = () => {
+      clock.stop();
+      if (!taps.length) { toast('Tap at least one line first'); draw(); return; }
+      review();
+    };
+
+    $('#sBody').addEventListener('pointerdown', e => { e.preventDefault(); tap(); });
+    $('#sTap').addEventListener('pointerdown', e => { e.preventDefault(); tap(); });
+    $('#sUndo').onclick = undo;
+    $('#sDone').onclick = finish;
+    $('#sBack').onclick = paste;
+    $('#sSlower').onclick = () => { bpm = clamp(bpm - 4, 30, 300); clock.setBpm(bpm); draw(); };
+    $('#sFaster').onclick = () => { bpm = clamp(bpm + 4, 30, 300); clock.setBpm(bpm); draw(); };
+    $('#sClick').onclick = () => { S.syncClick = S.syncClick === false; store.save(); clock.metronome = S.syncClick !== false; draw(); };
+
+    offKey();
+    onKey = e => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      if ([' ', 'Enter', 'ArrowDown', 'ArrowRight', 'PageDown'].includes(e.key)) { e.preventDefault(); e.target.blur?.(); tap(); }
+      else if (['Backspace', 'ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); undo(); }
+      else if (e.key === 'Escape') paste();
+    };
+    document.addEventListener('keydown', onKey);
+
+    const frame = now => {
+      if (!clock.running) return;
+      clock.schedule(now);
+      const n = clock.countIn(now);
+      if (n !== shownCount) {
+        shownCount = n;
+        countEl.hidden = !n;
+        if (n) { countEl.textContent = n; countEl.classList.remove('pop'); void countEl.offsetWidth; countEl.classList.add('pop'); }
+        draw();
+      }
+      const beat = clock.beat(now);
+      if (beat >= bars.length * bpb) { clock.stop(); draw(); toast('End of the song — press Finish'); return; }
+      if (n) return;
+      const bar = Math.floor(beat / bpb);
+      const chords = bars[bar].chords;
+      const within = (beat - bar * bpb) / bpb;
+      $('#sBar').textContent = `Bar ${bar + 1} / ${bars.length}`;
+      $('#sChord').textContent = chords[Math.min(chords.length - 1, Math.floor(within * chords.length))] || '';
+      const bi = Math.floor(beat - bar * bpb);
+      $('#sBeats').querySelectorAll('i').forEach((d, k) => d.classList.toggle('on', k === bi));
+    };
+    const loop = now => { frame(now); raf = requestAnimationFrame(loop); };
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(loop);
+    window.__stagescroll = { clock, tap, undo, finish, frame }; // testing hook
+    draw();
+  }
+
+  // Step 3: review and save
+  function review() {
+    cancelAnimationFrame(raf); offKey();
+    const total = sections.reduce((k, s) => k + s.lines.length, 0);
+    const merged = buildMerged({
+      meta: { ...chart.meta, title: song.title, artist: song.artist, tempo: +chart.meta.tempo || bpm },
+      bars, bpb, sections, taps,
+    });
+    shell('songs', `
+      <div class="toolbar"><h2 class="grow">Review — ${esc(song.title)}</h2>
+        <button class="btn" id="again">↶ Tap again</button>
+        <button class="btn primary" id="save">Save</button></div>
+      ${taps.length < total ? `<p class="warn">Only ${taps.length} of ${total} lines were tapped — the rest are left out. Tap again to include them.</p>` : ''}
+      <p class="sub wrap">Chords inside a line are placed by timing, so one may sit a word early or late — nudge it in the
+        editor afterwards. The original chart is kept, so you can re-sync any time.</p>
+      <div class="preview sheet review" id="prev">${renderSheet(parseChordPro(merged))}</div>`);
+    app.querySelector('#again').onclick = () => { taps = []; tapAlong(); };
+    app.querySelector('#save').onclick = () => {
+      store.upsertSong({ id, chordpro: merged, sourceChart: song.sourceChart || song.chordpro, lyricsText });
+      toast('Saved — press Count in to play along');
+      go(`#/play/song/${id}`);
+    };
+  }
+
+  paste();
+}
+
 // ---------------------------------------------------------------- perform
 function viewPerform(songIds, startIdx, set) {
   const ids = songIds.filter(id => store.getSong(id));
@@ -365,6 +562,7 @@ function viewPerform(songIds, startIdx, set) {
         <button class="btn ghost icon" data-a="exit" title="Back (Esc)">←</button>
         <div class="ptitle grow"><div class="t" id="pTitle"></div><div class="sub" id="pSub"></div></div>
         <span class="pos" id="pPos"></span>
+        <button class="btn ghost" id="syncBtn" data-a="sync" title="Add or re-sync lyrics by tapping along" hidden>Lyrics</button>
         <button class="btn ghost icon" data-a="fs" title="Fullscreen">⛶</button>
       </header>
       <div class="stage" id="stage"><div class="sheet" id="sheet"></div></div>
@@ -401,7 +599,7 @@ function viewPerform(songIds, startIdx, set) {
   let idx = clamp(startIdx, 0, ids.length - 1);
   let song, parsed, lineEls = [], words = [], activeLine = -1;
   let playing = false, voiceOn = false, voiceRate = 1;
-  let barMode = false, cells = [];
+  let timed = false, units = [];
   let pos = null, target = null, syncAfterTarget = false, raf = 0, last = 0, manualTimer = 0;
 
   const follower = new VoiceFollower({
@@ -415,32 +613,61 @@ function viewPerform(songIds, startIdx, set) {
   });
   window.__stagescroll = { hear: text => follower.feed(text) }; // testing hook: simulate singing
 
-  // Bar highlight for chord charts (e.g. Chordify imports): count-in, then follow the tempo.
+  // Timed playback: chord charts (e.g. Chordify imports) and songs synced by tap-along.
+  // Count in, then bars and lyric lines light up in tempo.
   const countEl = $('#countin');
-  const player = new BarPlayer({
+  const player = new TimelinePlayer({
     onCount: n => {
       countEl.hidden = !n;
       if (n) { countEl.textContent = n; countEl.classList.remove('pop'); void countEl.offsetWidth; countEl.classList.add('pop'); }
     },
-    onBar: (bar, cell) => {
-      $('#pPos').textContent = `Bar ${bar + 1} / ${cells.length}`;
-      const row = cell.closest('.line');
+    onUnit: (unit, beat) => {
+      const bars = Math.ceil(units[units.length - 1].end / beatsPerBar());
+      $('#pPos').textContent = `Bar ${Math.floor(beat / beatsPerBar()) + 1} / ${bars}`;
+      const row = unit.el.closest('.line');
       const desired = clamp(row.offsetTop - stage.clientHeight * 0.3, 0, stage.scrollHeight - stage.clientHeight);
       if (Math.abs(desired - stage.scrollTop) > row.offsetHeight * 0.5) { target = desired; syncAfterTarget = false; }
     },
     onEnd: () => { updateControls(); showPos(); },
   });
-  window.__stagescroll.bars = player; // testing hook
+  window.__stagescroll.player = player; // testing hook
   const bpm = () => song.bpm || +parsed.meta.tempo || 100;
   const beatsPerBar = () => +(String(parsed.meta.time || '').match(/^(\d+)\s*\//) || [])[1] || 4;
   const showPos = () => { $('#pPos').textContent = ids.length > 1 ? `${idx + 1} / ${ids.length}` : ''; };
-  function toggleBars(fromBar) {
-    if (player.running && fromBar === undefined) { player.stop(); showPos(); }
-    else {
-      const resume = player.bar >= 0 && player.bar < cells.length - 1 ? player.bar : 0;
-      player.start(fromBar ?? resume, bpm());
-    }
+  function toggleTimed(fromUnit) {
+    if (player.running && fromUnit === undefined) { player.stop(); showPos(); }
+    else player.start(fromUnit ?? player.resumeIndex(), bpm());
     updateControls();
+  }
+
+  // Units in beat order. Songs with {x_at} markers use them; a plain chart plays bar after bar.
+  function buildUnits() {
+    const bpb = beatsPerBar();
+    const lineItems = parsed.items.filter(i => i.type === 'line');
+    const list = [];
+    if (lineItems.some(i => i.at)) {
+      lineItems.forEach((it, li) => {
+        const start = it.at ? parseAt(it.at, bpb) : null;
+        if (start === null) return;
+        const el = lineEls[li];
+        const cs = [...el.querySelectorAll('.cell')];
+        if (cs.length) cs.forEach((c, k) => list.push({ el: c, kind: 'cell', start: start + k * bpb, end: start + (k + 1) * bpb }));
+        else {
+          const groups = [];
+          el.querySelectorAll('.w').forEach(w => {
+            const g = (groups[+w.dataset.w] ||= { els: [], len: 0 });
+            g.els.push(w);
+            g.len += w.textContent.length + 1;
+          });
+          list.push({ el, kind: 'line', start, end: null, words: groups.filter(Boolean) });
+        }
+      });
+      list.sort((a, b) => a.start - b.start);
+      list.forEach((u, i) => { if (u.end === null) u.end = list[i + 1]?.start ?? u.start + 2 * bpb; });
+    } else if (!words.length) {
+      sheet.querySelectorAll('.bars .cell').forEach((c, i) => list.push({ el: c, kind: 'cell', start: i * bpb, end: (i + 1) * bpb }));
+    }
+    return list;
   }
 
   // ---- song loading & drawing
@@ -480,10 +707,10 @@ function viewPerform(songIds, startIdx, set) {
     });
     follower.setWords(words.map(g => g.text));
     activeLine = -1;
-    // Chord charts with no lyrics play bar by bar instead of scrolling.
-    cells = [...sheet.querySelectorAll('.bars .cell')];
-    barMode = !words.length && cells.length > 0;
-    player.setCells(barMode ? cells : [], beatsPerBar());
+    // Chord charts and tap-synced songs play in tempo instead of scrolling.
+    units = buildUnits();
+    timed = units.length > 0;
+    player.setUnits(units, beatsPerBar());
 
     const m = parsed.meta;
     $('#pTitle').textContent = song.title;
@@ -510,10 +737,11 @@ function viewPerform(songIds, startIdx, set) {
   const effectiveSpeed = () => baseSpeed() * S.fontScale * (voiceOn && playing ? voiceRate : 1);
 
   function updateControls() {
-    $('#playBtn').textContent = barMode ? (player.running ? '⏸ Stop' : '▶ Count in') : playing ? '⏸ Pause' : '▶ Scroll';
-    $('#playBtn').title = barMode ? 'Count in, then highlight each bar in time (Space). Tap a bar to start there.' : 'Start / stop scrolling (Space)';
-    $('#speedVal').textContent = barMode ? `${bpm()} bpm` : Math.round(baseSpeed());
-    $('#speedGrp').title = barMode ? 'Tempo (− / +)' : 'Scroll speed (− / +)';
+    $('#playBtn').textContent = timed ? (player.running ? '⏸ Stop' : '▶ Count in') : playing ? '⏸ Pause' : '▶ Scroll';
+    $('#playBtn').title = timed ? 'Count in, then follow the song in tempo (Space). Tap a bar or line to start there.' : 'Start / stop scrolling (Space)';
+    $('#speedVal').textContent = timed ? `${bpm()} bpm` : Math.round(baseSpeed());
+    $('#speedGrp').title = timed ? 'Tempo (− / +)' : 'Scroll speed (− / +)';
+    $('#syncBtn').hidden = !song.sourceChart && !sheet.querySelector('.bars .cell');
     $('#chordsBtn').classList.toggle('on', S.showChords);
     $('#voiceBtn').classList.toggle('on', voiceOn);
     $('#heardBtn').classList.toggle('on', S.showHeard);
@@ -598,7 +826,7 @@ function viewPerform(songIds, startIdx, set) {
   }
 
   const bumpSpeed = delta => {
-    if (barMode) {
+    if (timed) {
       song = store.upsertSong({ id: song.id, bpm: clamp(bpm() + delta, 30, 300) });
       player.setBpm(bpm());
     } else {
@@ -617,13 +845,14 @@ function viewPerform(songIds, startIdx, set) {
 
   const actions = {
     exit, prev: () => idx > 0 && loadSong(idx - 1), next: () => idx < ids.length - 1 && loadSong(idx + 1),
-    play: () => (barMode ? toggleBars() : setPlaying(!playing)), slower: () => bumpSpeed(-2), faster: () => bumpSpeed(2),
+    play: () => (timed ? toggleTimed() : setPlaying(!playing)), slower: () => bumpSpeed(-2), faster: () => bumpSpeed(2),
     voice: () => setVoice(!voiceOn),
     heard: () => { S.showHeard = !S.showHeard; store.save(); updateControls(); },
     smaller: () => { S.fontScale = clamp(+(S.fontScale - 0.1).toFixed(2), 0.6, 2.5); store.save(); drawSheet(true); },
     bigger: () => { S.fontScale = clamp(+(S.fontScale + 0.1).toFixed(2), 0.6, 2.5); store.save(); drawSheet(true); },
     chords: () => { S.showChords = !S.showChords; store.save(); drawSheet(true); },
     down: () => transpose(-1), up: () => transpose(1),
+    sync: () => go(`#/sync/${song.id}`),
     fs: () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.()),
   };
 
@@ -631,8 +860,12 @@ function viewPerform(songIds, startIdx, set) {
     const b = e.target.closest('[data-a]');
     if (b) { b.blur(); actions[b.dataset.a]?.(); return; }
     // In a chord chart, tapping a bar starts (or restarts) playback from that bar.
-    const cell = barMode && e.target.closest('.bars .cell');
-    if (cell) { toggleBars(cells.indexOf(cell)); return; }
+    // In a timed song, tapping a bar or lyric line starts (or restarts) from there.
+    if (timed) {
+      const hit = e.target.closest('.bars .cell') || e.target.closest('.line');
+      const i = hit ? units.findIndex(u => u.el === hit) : -1;
+      if (i >= 0) { toggleTimed(i); return; }
+    }
     // Tap zones on the sheet: bottom third pages down, top quarter pages up.
     if (e.target.closest('#stage')) {
       const r = stage.getBoundingClientRect();

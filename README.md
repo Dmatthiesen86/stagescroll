@@ -45,6 +45,13 @@ Open http://localhost:5173 in **Chrome or Edge** (voice follow needs their speec
   one bar, then lights up each bar in time with a progress line; split bars light each chord for
   its share of the beats. **− / +** change the tempo (saved per song). Tap any bar to start there.
   Add `{time: 3/4}` for waltzes.
+- **Add lyrics (tap along)** — for your own songs, where Chordify has the chords but nothing has
+  the lyrics: open the chart → **Lyrics** (or *Add lyrics* in the editor) → paste the lyrics as you
+  sing them → **Count in** and tap (screen / Space / pedal) as each line starts. **Undo** rewinds a
+  bar so you can retry; slow the tempo down if you like — timings are stored in beats. The app
+  builds a song whose lines carry the chords from the bars they span (intros and solos stay as
+  bar rows), and **Count in** then plays it karaoke-style. The original chart is kept for re-syncing.
+  Timing lives in `{x_at: bar:beat}` lines in the ChordPro.
 - **Setlists**: build, reorder, play. Tapping a song in a set starts from there.
 
 ### Perform controls
@@ -84,7 +91,8 @@ scroll carries you through solos and instrumental breaks.
 - `js/app.js` — UI: library, setlists, editor, perform view
 - `js/store.js` — localStorage persistence, import/export
 - `js/pdfimport.js` — PDF → ChordPro (pdf.js text layer, or Tesseract OCR for image PDFs)
-- `js/bars.js` — count-in and tempo-driven bar highlight
+- `js/timeline.js` — tempo clock (count-in, metronome) and timed playback of bars and lines
+- `js/lyricsync.js` — merges tap-along lyrics into a bar chart
 - `js/chordify.js` — Chordify lead sheet → bar chart (finds staff and bar lines on the rendered page)
 - `js/vendor/` — pdf.js (Apache-2.0) and Tesseract.js (Apache-2.0), bundled for offline use
 - `sw.js` — offline cache (works once hosted over HTTPS or on localhost)

@@ -138,7 +138,7 @@ const SHORT = { soc: 'start_of_chorus', eoc: 'end_of_chorus', sov: 'start_of_ver
 export function parseChordPro(text) {
   const meta = {};
   const items = [];
-  let section = null, inTab = false;
+  let section = null, inTab = false, at = null;
 
   for (const raw of String(text).replace(/\r\n?/g, '\n').split('\n')) {
     const line = raw.replace(/\s+$/, '');
@@ -161,6 +161,7 @@ export function parseChordPro(text) {
         case 'key': meta.key = val; break;
         case 'tempo': meta.tempo = val; break;
         case 'time': meta.time = val; break;
+        case 'x_at': at = val; break; // timing for the next line (bar:beat), set by tap-along sync
         case 'capo': meta.capo = val; break;
         case 'duration': meta.duration = parseDuration(val); break;
         case 'comment': case 'c': case 'ci': case 'cb': case 'comment_italic': case 'comment_box':
@@ -173,7 +174,8 @@ export function parseChordPro(text) {
     if (inTab) { items.push({ type: 'tab', text: line }); continue; }
     if (line.trim().startsWith('#')) continue;
     if (!line.trim()) { items.push({ type: 'blank' }); continue; }
-    items.push({ type: 'line', section, segs: parseSegs(line) });
+    items.push({ type: 'line', section, segs: parseSegs(line), at });
+    at = null;
   }
   return { meta, items };
 }

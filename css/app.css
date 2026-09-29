@@ -143,3 +143,24 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: v
 .countin.pop { animation: pop .45s ease-out; }
 @keyframes pop { from { transform: translate(-50%, -50%) scale(1.35); opacity: .3; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .countin.pop { animation: none; } }
+
+/* lyrics tap-along */
+.wrap { white-space: normal; overflow: visible; margin: 0 0 12px; max-width: 70ch; }
+.warn { color: var(--accent); margin: 0 0 10px; }
+.lyrics-input { width: 100%; height: calc(100vh - 290px); min-height: 280px; resize: vertical; background: var(--panel);
+  color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font: 16px/1.6 system-ui, sans-serif; margin-bottom: 12px; }
+.review { max-height: calc(100vh - 250px); }
+.sync .sync-body { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 22px;
+  padding: 16px; text-align: center; user-select: none; -webkit-user-select: none; touch-action: manipulation; cursor: pointer; }
+.sync-status { display: flex; align-items: center; gap: 18px; }
+.sync-chord { font-size: 44px; font-weight: 800; color: var(--chord); min-width: 3ch; }
+.beats { display: flex; gap: 8px; }
+.beats i { width: 14px; height: 14px; border-radius: 50%; background: var(--line); }
+.beats i.on { background: var(--accent); }
+.beats i:first-child.on { box-shadow: 0 0 0 3px rgba(245, 182, 66, .35); }
+.sync-lines { display: flex; flex-direction: column; gap: 10px; max-width: 900px; }
+.s-prev { color: var(--muted); font-size: 20px; min-height: 1.3em; text-decoration: line-through; text-decoration-color: rgba(142,147,157,.4); }
+.s-label { color: var(--accent); font-size: 13px; text-transform: uppercase; letter-spacing: .14em; font-weight: 700; min-height: 1.2em; }
+.s-next { font-size: clamp(26px, 5vw, 44px); font-weight: 700; line-height: 1.2; }
+.s-after { color: var(--muted); font-size: 20px; min-height: 1.3em; }
+.tapbtn { min-width: 200px; }

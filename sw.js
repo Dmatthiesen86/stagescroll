@@ -1,9 +1,9 @@
 // Offline-first service worker: the app always opens instantly from the device's cache
 // (no waiting on flaky venue Wi-Fi), and quietly fetches updates in the background when online.
 // Bump CACHE when shipping changes so devices pick them up on the next launch.
-const CACHE = 'stagescroll-v5';
+const CACHE = 'stagescroll-v6';
 const ASSETS = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/store.js', 'js/chordpro.js',
-  'js/follow.js', 'js/samples.js', 'js/pdfimport.js', 'js/chordify.js', 'js/bars.js', 'js/vendor/pdf.min.mjs', 'js/vendor/pdf.worker.min.mjs',
+  'js/follow.js', 'js/samples.js', 'js/pdfimport.js', 'js/chordify.js', 'js/timeline.js', 'js/lyricsync.js', 'js/vendor/pdf.min.mjs', 'js/vendor/pdf.worker.min.mjs',
   'manifest.json', 'icon.svg', 'icon-180.png', 'icon-512.png'];
 // Text recognition for picture-only PDFs (~15 MB). Downloaded in the background after install
 // so PDF import also works offline, without slowing down the first launch.
