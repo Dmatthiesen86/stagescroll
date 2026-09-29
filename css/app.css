@@ -129,3 +129,17 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: v
 .sheet .bars .cell { display: flex; flex-wrap: wrap; gap: 0 .5em; align-items: baseline; padding: .15em .5em;
   border-left: 2px solid var(--line); min-width: 0; }
 .sheet .bars .rep { color: var(--muted); }
+
+/* bar highlight (chord charts) */
+.sheet .bars .cell { position: relative; transition: opacity .25s, background-color .15s; }
+.sheet .bars .cell.past { opacity: .4; }
+.sheet .bars .cell.now { background: rgba(245, 182, 66, .14); }
+.sheet .bars .cell.now::after { content: ''; position: absolute; left: 0; bottom: 0; height: 3px;
+  width: calc(var(--p, 0) * 100%); background: var(--accent); }
+.sheet .ch-in.on { color: var(--accent); }
+.sheet .bars .cell { cursor: pointer; }
+.countin { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); z-index: 20; pointer-events: none;
+  font-size: min(34vw, 220px); font-weight: 800; color: var(--accent); text-shadow: 0 6px 30px rgba(0,0,0,.6); line-height: 1; }
+.countin.pop { animation: pop .45s ease-out; }
+@keyframes pop { from { transform: translate(-50%, -50%) scale(1.35); opacity: .3; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .countin.pop { animation: none; } }

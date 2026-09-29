@@ -1,6 +1,7 @@
 import * as store from './store.js';
 import { parseChordPro, plainToChordPro, transposeChord, keyPrefersFlats, isChord } from './chordpro.js';
 import { VoiceFollower } from './follow.js';
+import { BarPlayer } from './bars.js';
 
 const app = document.getElementById('app');
 const S = store.settings;
@@ -367,6 +368,7 @@ function viewPerform(songIds, startIdx, set) {
         <button class="btn ghost icon" data-a="fs" title="Fullscreen">⛶</button>
       </header>
       <div class="stage" id="stage"><div class="sheet" id="sheet"></div></div>
+      <div class="countin" id="countin" hidden></div>
       <div class="heard" id="heard" hidden></div>
       <footer class="pctl">
         <div class="grp">
@@ -374,7 +376,7 @@ function viewPerform(songIds, startIdx, set) {
           <button class="btn primary play" data-a="play" id="playBtn" title="Start / stop scrolling (Space)">▶ Scroll</button>
           <button class="btn icon" data-a="next" title="Next song (N)">⏭</button>
         </div>
-        <div class="grp" title="Scroll speed (− / +)">
+        <div class="grp" id="speedGrp" title="Scroll speed (− / +)">
           <button class="btn icon" data-a="slower">−</button>
           <span class="val" id="speedVal"></span>
           <button class="btn icon" data-a="faster">+</button>
@@ -399,6 +401,7 @@ function viewPerform(songIds, startIdx, set) {
   let idx = clamp(startIdx, 0, ids.length - 1);
   let song, parsed, lineEls = [], words = [], activeLine = -1;
   let playing = false, voiceOn = false, voiceRate = 1;
+  let barMode = false, cells = [];
   let pos = null, target = null, syncAfterTarget = false, raf = 0, last = 0, manualTimer = 0;
 
   const follower = new VoiceFollower({
@@ -412,6 +415,34 @@ function viewPerform(songIds, startIdx, set) {
   });
   window.__stagescroll = { hear: text => follower.feed(text) }; // testing hook: simulate singing
 
+  // Bar highlight for chord charts (e.g. Chordify imports): count-in, then follow the tempo.
+  const countEl = $('#countin');
+  const player = new BarPlayer({
+    onCount: n => {
+      countEl.hidden = !n;
+      if (n) { countEl.textContent = n; countEl.classList.remove('pop'); void countEl.offsetWidth; countEl.classList.add('pop'); }
+    },
+    onBar: (bar, cell) => {
+      $('#pPos').textContent = `Bar ${bar + 1} / ${cells.length}`;
+      const row = cell.closest('.line');
+      const desired = clamp(row.offsetTop - stage.clientHeight * 0.3, 0, stage.scrollHeight - stage.clientHeight);
+      if (Math.abs(desired - stage.scrollTop) > row.offsetHeight * 0.5) { target = desired; syncAfterTarget = false; }
+    },
+    onEnd: () => { updateControls(); showPos(); },
+  });
+  window.__stagescroll.bars = player; // testing hook
+  const bpm = () => song.bpm || +parsed.meta.tempo || 100;
+  const beatsPerBar = () => +(String(parsed.meta.time || '').match(/^(\d+)\s*\//) || [])[1] || 4;
+  const showPos = () => { $('#pPos').textContent = ids.length > 1 ? `${idx + 1} / ${ids.length}` : ''; };
+  function toggleBars(fromBar) {
+    if (player.running && fromBar === undefined) { player.stop(); showPos(); }
+    else {
+      const resume = player.bar >= 0 && player.bar < cells.length - 1 ? player.bar : 0;
+      player.start(fromBar ?? resume, bpm());
+    }
+    updateControls();
+  }
+
   // ---- song loading & drawing
   function loadSong(i) {
     idx = i;
@@ -419,6 +450,7 @@ function viewPerform(songIds, startIdx, set) {
     parsed = parseChordPro(song.chordpro);
     if (set) history.replaceState(null, '', `#/play/set/${set.id}/${idx}`);
     setPlaying(false);
+    player.reset();
     voiceRate = 1; target = null;
     drawSheet(false);
     stage.scrollTop = 0; pos = null;
@@ -448,13 +480,17 @@ function viewPerform(songIds, startIdx, set) {
     });
     follower.setWords(words.map(g => g.text));
     activeLine = -1;
+    // Chord charts with no lyrics play bar by bar instead of scrolling.
+    cells = [...sheet.querySelectorAll('.bars .cell')];
+    barMode = !words.length && cells.length > 0;
+    player.setCells(barMode ? cells : [], beatsPerBar());
 
     const m = parsed.meta;
     $('#pTitle').textContent = song.title;
     $('#pSub').textContent = [song.artist,
       m.key && `Key ${transposeChord(m.key, n, flats)}${n ? ` (${n > 0 ? '+' : ''}${n})` : ''}`,
       m.capo && `Capo ${m.capo}`, m.tempo && `${m.tempo} bpm`].filter(Boolean).join(' · ');
-    $('#pPos').textContent = ids.length > 1 ? `${idx + 1} / ${ids.length}` : '';
+    if (!player.running) showPos();
     if (keepPlace) { stage.scrollTop = ratio * Math.max(1, stage.scrollHeight - stage.clientHeight); pos = null; }
     updateControls();
     if (voiceOn) syncCursor();
@@ -474,8 +510,10 @@ function viewPerform(songIds, startIdx, set) {
   const effectiveSpeed = () => baseSpeed() * S.fontScale * (voiceOn && playing ? voiceRate : 1);
 
   function updateControls() {
-    $('#playBtn').textContent = playing ? '⏸ Pause' : '▶ Scroll';
-    $('#speedVal').textContent = Math.round(baseSpeed());
+    $('#playBtn').textContent = barMode ? (player.running ? '⏸ Stop' : '▶ Count in') : playing ? '⏸ Pause' : '▶ Scroll';
+    $('#playBtn').title = barMode ? 'Count in, then highlight each bar in time (Space). Tap a bar to start there.' : 'Start / stop scrolling (Space)';
+    $('#speedVal').textContent = barMode ? `${bpm()} bpm` : Math.round(baseSpeed());
+    $('#speedGrp').title = barMode ? 'Tempo (− / +)' : 'Scroll speed (− / +)';
     $('#chordsBtn').classList.toggle('on', S.showChords);
     $('#voiceBtn').classList.toggle('on', voiceOn);
     $('#heardBtn').classList.toggle('on', S.showHeard);
@@ -535,6 +573,7 @@ function viewPerform(songIds, startIdx, set) {
     last = t;
     const max = stage.scrollHeight - stage.clientHeight;
     if (pos === null || Math.abs(stage.scrollTop - pos) > 2) pos = stage.scrollTop;
+    player.frame(t);
     if (playing) pos += effectiveSpeed() * dt;
     if (target !== null) {
       const err = target - pos;
@@ -559,7 +598,12 @@ function viewPerform(songIds, startIdx, set) {
   }
 
   const bumpSpeed = delta => {
-    song = store.upsertSong({ id: song.id, speed: clamp(Math.round(baseSpeed() + delta), 2, 300) });
+    if (barMode) {
+      song = store.upsertSong({ id: song.id, bpm: clamp(bpm() + delta, 30, 300) });
+      player.setBpm(bpm());
+    } else {
+      song = store.upsertSong({ id: song.id, speed: clamp(Math.round(baseSpeed() + delta), 2, 300) });
+    }
     updateControls();
   };
   const transpose = d => {
@@ -573,7 +617,7 @@ function viewPerform(songIds, startIdx, set) {
 
   const actions = {
     exit, prev: () => idx > 0 && loadSong(idx - 1), next: () => idx < ids.length - 1 && loadSong(idx + 1),
-    play: () => setPlaying(!playing), slower: () => bumpSpeed(-2), faster: () => bumpSpeed(2),
+    play: () => (barMode ? toggleBars() : setPlaying(!playing)), slower: () => bumpSpeed(-2), faster: () => bumpSpeed(2),
     voice: () => setVoice(!voiceOn),
     heard: () => { S.showHeard = !S.showHeard; store.save(); updateControls(); },
     smaller: () => { S.fontScale = clamp(+(S.fontScale - 0.1).toFixed(2), 0.6, 2.5); store.save(); drawSheet(true); },
@@ -586,6 +630,9 @@ function viewPerform(songIds, startIdx, set) {
   app.querySelector('.perform').addEventListener('click', e => {
     const b = e.target.closest('[data-a]');
     if (b) { b.blur(); actions[b.dataset.a]?.(); return; }
+    // In a chord chart, tapping a bar starts (or restarts) playback from that bar.
+    const cell = barMode && e.target.closest('.bars .cell');
+    if (cell) { toggleBars(cells.indexOf(cell)); return; }
     // Tap zones on the sheet: bottom third pages down, top quarter pages up.
     if (e.target.closest('#stage')) {
       const r = stage.getBoundingClientRect();
@@ -632,6 +679,7 @@ function viewPerform(songIds, startIdx, set) {
     cancelAnimationFrame(raf);
     clearTimeout(manualTimer);
     follower.stop();
+    player.dispose();
     delete window.__stagescroll;
     document.removeEventListener('keydown', onKey);
     document.removeEventListener('visibilitychange', onVis);

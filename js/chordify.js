@@ -173,7 +173,7 @@ function buildChart(measures, rawTitle, tempo) {
   const head = [`{title: ${title}}`];
   if (artist) head.push(`{artist: ${artist}}`);
   if (tempo) {
-    head.push(`{tempo: ${tempo}}`);
+    head.push(`{tempo: ${tempo}}`, '{time: 4/4}');
     const secs = Math.round(bars.length * 4 * 60 / tempo); // Chordify charts are in 4/4
     head.push(`{duration: ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}}`);
   }

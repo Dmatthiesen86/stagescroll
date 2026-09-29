@@ -160,6 +160,7 @@ export function parseChordPro(text) {
         case 'subtitle': case 'st': case 'artist': meta.artist = val; break;
         case 'key': meta.key = val; break;
         case 'tempo': meta.tempo = val; break;
+        case 'time': meta.time = val; break;
         case 'capo': meta.capo = val; break;
         case 'duration': meta.duration = parseDuration(val); break;
         case 'comment': case 'c': case 'ci': case 'cb': case 'comment_italic': case 'comment_box':
