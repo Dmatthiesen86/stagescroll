@@ -54,7 +54,8 @@ export function renderSheet(parsed, { transpose = 0, flats = false } = {}) {
     const hasCh = it.segs.some(s => s.chord);
     const cls = `${it.section ? ` in-${esc(it.section)}` : ''}`;
     // Chord-only lines ("| [Am] | % | [G] |" or "[C] [Cmaj7] [F]") render as a chart, not over empty lyrics.
-    if (hasCh && it.segs.every(s => /^[\s|%]*$/.test(s.text))) {
+    // (A row can be just "| % |" — the previous chord carried on — with no chord name in it.)
+    if ((hasCh || it.segs.some(s => s.text.includes('|'))) && it.segs.every(s => /^[\s|%]*$/.test(s.text))) {
       out.push(renderChart(it.segs, tc, cls, li++));
       continue;
     }
