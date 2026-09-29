@@ -16,6 +16,17 @@ const lineNotes = line => [
 const withoutNotes = line => line.replace(/\(([^)]*)\)/g, (m, x) => (isChord(x) ? m : ' '.repeat(m.length)))
   .replace(/\[([^\]]+)\]/g, (m, x) => (isChord(x) ? x.padEnd(m.length) : ' '.repeat(m.length)));
 
+// Chord names printed so close together they ran into one word: "ABmG" → "A Bm G". Only when the
+// whole run splits into chords and has 2+ capitals, so a word like "Cab" is left alone.
+const splitGlued = t => {
+  if ((t.match(/[A-G]/g) || []).length < 2 || /[H-Z]/.test(t)) return null;
+  const parts = t.split(/(?=[A-G](?![^/]*\/[A-G]$))/).filter(Boolean);
+  const merged = [];
+  for (const p of parts) (merged.length && merged[merged.length - 1].endsWith('/') ? merged.push(merged.pop() + p) : merged.push(p));
+  return merged.length > 1 && merged.every(isChord) ? merged : null;
+};
+export const unglueChords = line => line.replace(/\S+/g, t => (isChord(t) ? t : splitGlued(t)?.join(' ') ?? t));
+
 // A speck of OCR noise on a chord line ("[5", "+4", "(o-") — short and mostly symbols.
 export const isNoiseToken = t => t.length <= 3 && /[^A-Za-z0-9#/]/.test(t) && !/[a-z]{2}/i.test(t);
 
@@ -47,7 +58,8 @@ export function isChordPro(text) {
 // Convert Ultimate-Guitar style "chords above lyrics" text into ChordPro.
 // Lines already in ChordPro directive form ({...}) pass through untouched.
 export function plainToChordPro(text) {
-  const lines = text.replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n');
+  const lines = text.replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n')
+    .map(l => { const u = unglueChords(l); return u !== l && isChordLine(u) ? u : l; }); // "D ABmG" → "D A Bm G"
   const out = [];
   let open = null;
   const close = () => {
