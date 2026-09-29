@@ -75,7 +75,9 @@ export function parseLyrics(text) {
 }
 
 // sections: from parseLyrics; taps: beat position for each lyric line, in order (may be shorter).
-export function buildMerged({ meta, bars, bpb, sections, taps, notes = [] }) {
+// wordBeats (optional): per line, per word, [startBeat, endBeat] or null — exact word timing (e.g.
+// from a karaoke file). With it, each chord change goes on the word being sung when it happens.
+export function buildMerged({ meta, bars, bpb, sections, taps, notes = [], wordBeats = null }) {
   const lines = sections.flatMap((s, si) => s.lines.map((text, k) => ({ text, section: si, first: k === 0 })));
   const n = Math.min(lines.length, taps.length);
   const totalBeats = bars.length * bpb;
@@ -119,26 +121,55 @@ export function buildMerged({ meta, bars, bpb, sections, taps, notes = [] }) {
     out.push('{end_of_verse}');
   };
 
-  // Intro: whole bars before the first sung line.
-  const firstBar = n ? Math.floor(taps[0] / bpb) : bars.length;
-  chartRows(0, firstBar, 'Intro');
-
-  let openSection = -1;
-  let sectionKind = 'verse';
+  // Pass 1: each line's span, and any instrumental gap after it.
+  // Chart rows run up to the bar a line starts in — including that bar when the line starts in its
+  // second half (a pickup), so e.g. "I fell into the…" before the downbeat keeps its bar in the intro.
+  const rowsUntil = beat => (beat / bpb - Math.floor(beat / bpb) >= 0.5 ? Math.ceil(beat / bpb) : Math.floor(beat / bpb));
+  const firstBar = n ? rowsUntil(taps[0]) : bars.length;
+  const spans = [];
   for (let j = 0; j < n; j++) {
     const L = lines[j], s = taps[j];
     const next = j + 1 < n ? taps[j + 1] : totalBeats;
     const lastOfSection = j + 1 >= n || lines[j + 1].section !== L.section;
     // The line runs to the next line, unless there's a long instrumental gap after it.
-    let e = next;
-    let gapFrom = null, gapTo = null;
+    let e = next, gapFrom = null, gapTo = null;
     if (lastOfSection && next - s > cap) {
       e = Math.min(next, Math.ceil((s + cap) / bpb) * bpb);
       gapFrom = Math.round(e / bpb);
-      gapTo = j + 1 < n ? Math.floor(next / bpb) : bars.length;
+      gapTo = j + 1 < n ? rowsUntil(next) : bars.length;
       if (gapTo <= gapFrom) { e = next; gapFrom = gapTo = null; }
     }
+    spans.push({ s, e, gapFrom, gapTo });
+  }
 
+  // Pass 2 (exact word timing): a chord change goes on the last word that starts no later than
+  // just after it (singers often land a word a little ahead of the beat). A change that falls
+  // after a word has finished goes on the next word sung. Changes in intro/instrumental bars
+  // are already shown in those chart rows.
+  const placed = Array.from({ length: n }, () => new Map());
+  const timed = j => wordBeats?.[j]?.some(Boolean);
+  if (wordBeats) {
+    const flat = [];
+    for (let j = 0; j < n; j++) (wordBeats[j] || []).forEach((wb, w) => { if (wb) flat.push({ j, w, b: wb[0], end: wb[1] }); });
+    const inGap = beat => beat < firstBar * bpb || spans.some(p => p.gapFrom !== null && beat >= p.gapFrom * bpb && beat < p.gapTo * bpb);
+    for (const ev of events) {
+      if (!flat.length || inGap(ev.beat)) continue;
+      let k = -1;
+      for (let i = 0; i < flat.length && flat[i].b <= ev.beat + 0.4; i++) k = i;
+      let t = flat[Math.max(0, k)];
+      if (k >= 0 && ev.beat > t.end + 0.25 && flat[k + 1] && flat[k + 1].b - ev.beat <= 2 * bpb) t = flat[k + 1];
+      if (!timed(t.j)) continue;
+      const m = placed[t.j];
+      m.set(t.w, (m.get(t.w) || '') + `[${ev.chord}]`);
+    }
+  }
+
+  chartRows(0, firstBar, 'Intro');
+  let shown = firstBar > 0 ? chordAt(firstBar * bpb - 1e-6) : null; // the chord currently on screen
+  let openSection = -1;
+  let sectionKind = 'verse';
+  for (let j = 0; j < n; j++) {
+    const L = lines[j], { s, e, gapFrom, gapTo } = spans[j];
     if (L.section !== openSection) {
       if (openSection >= 0) out.push(`{end_of_${sectionKind}}`);
       const sec = sections[L.section];
@@ -146,12 +177,16 @@ export function buildMerged({ meta, bars, bpb, sections, taps, notes = [] }) {
       out.push('', `{start_of_${sec.kind}: ${sec.label}}`);
       openSection = L.section;
     }
-    out.push(`{x_at: ${formatAt(s, bpb)}}`, placeChords(L.text, s, e, chordAt(s), events));
+    const text = timed(j) ? applyChords(L.text, placed[j]) : spreadChords(L.text, s, e, chordAt(s) !== shown ? chordAt(s) : null, events);
+    out.push(`{x_at: ${formatAt(s, bpb)}}`, text);
+    const last = [...text.matchAll(/\[([^\]]+)\]/g)].pop();
+    if (last) shown = last[1];
 
     if (gapFrom !== null) {
       out.push(`{end_of_${sectionKind}}`);
       openSection = -1;
       chartRows(gapFrom, gapTo, j + 1 < n ? 'Instrumental' : 'Outro');
+      shown = chordAt(gapTo * bpb - 1e-6);
     }
   }
   if (openSection >= 0) out.push(`{end_of_${sectionKind}}`);
@@ -159,18 +194,24 @@ export function buildMerged({ meta, bars, bpb, sections, taps, notes = [] }) {
   return head.join('\n') + '\n' + out.join('\n') + '\n';
 }
 
-// Put the chord that's playing when the line starts on its first word, and later chord changes
-// on the word sung at about that point (spread across the line's span).
-function placeChords(text, s, e, startChord, events) {
-  const toks = text.split(/(\s+)/);
-  const wordIdx = toks.map((t, i) => (t.trim() ? i : -1)).filter(i => i >= 0);
-  const at = new Map();
-  const put = (w, c) => { const i = wordIdx[Math.min(w, wordIdx.length - 1)]; at.set(i, (at.get(i) || '') + `[${c}]`); };
+// Insert chords before the given word indexes (word = whitespace-separated token).
+function applyChords(text, byWord) {
+  let w = -1;
+  return text.split(/(\s+)/).map(t => (t.trim() ? (byWord.get(++w) || '') + t : t)).join('');
+}
+
+// Without word timing (tap-along): put the chord that's playing when the line starts on its first
+// word (only if it isn't already showing), and later changes on the word sung at about that point,
+// spread across the line's span.
+function spreadChords(text, s, e, startChord, events) {
+  const words = text.split(/\s+/).filter(Boolean).length;
+  const byWord = new Map();
+  const put = (w, c) => { const i = Math.min(w, words - 1); byWord.set(i, (byWord.get(i) || '') + `[${c}]`); };
   if (startChord) put(0, startChord);
   const span = Math.max(1e-6, e - s);
   for (const ev of events) {
     if (ev.beat <= s + 1e-6 || ev.beat >= e - 1e-6) continue;
-    put(Math.floor(((ev.beat - s) / span) * wordIdx.length), ev.chord);
+    put(Math.floor(((ev.beat - s) / span) * words), ev.chord);
   }
-  return toks.map((t, i) => (at.get(i) || '') + t).join('');
+  return applyChords(text, byWord);
 }

@@ -372,6 +372,8 @@ function viewSync(id) {
   const bpb = +(String(chart.meta.time || '').match(/^(\d+)\s*\//) || [])[1] || 4;
   let bpm = song.bpm || +chart.meta.tempo || 100;
   let sections = [], taps = [];
+  // Word timing from an auto-sync (karaoke file), kept in step with taps when the timing is shifted.
+  let words = null, wordsAt = 0;
   let lyricsText = song.lyricsText || '';
   const clock = new Clock();
   let raf = 0;
@@ -405,6 +407,7 @@ function viewSync(id) {
       if (!sections.length) { toast('Paste some lyrics first'); return; }
       store.upsertSong({ id, lyricsText });
       taps = [];
+      words = null; // the lyrics may have changed, so stored word timing no longer applies
       tapAlong();
     };
   }
@@ -528,6 +531,13 @@ function viewSync(id) {
     draw();
   }
 
+  // Stored word timing moved by however far the lines have been shifted since it was saved.
+  const shiftedWords = () => {
+    if (!words || !taps.length) return null;
+    const d = taps[0] - wordsAt;
+    return d ? words.map(ws => ws && ws.map(w => w && [w[0] + d, w[1] + d])) : words;
+  };
+
   // Step 3: review, shift the timing if needed, and save
   function review(adjusting = false) {
     cancelAnimationFrame(raf); offKey();
@@ -536,6 +546,7 @@ function viewSync(id) {
       meta: { ...chart.meta, title: song.title, artist: song.artist, tempo: +chart.meta.tempo || bpm },
       bars, bpb, sections, taps,
       notes: chart.items.filter(i => i.type === 'comment').map(i => i.text), // e.g. Chordify's transposition note
+      wordBeats: shiftedWords(),
     });
     let merged = build();
     shell('songs', `
@@ -566,10 +577,10 @@ function viewSync(id) {
       taps = taps.map(t => t + +b.dataset.shift);
       draw();
     });
-    app.querySelector('#again').onclick = () => { taps = []; tapAlong(); };
+    app.querySelector('#again').onclick = () => { taps = []; words = null; tapAlong(); };
     app.querySelector('#edit')?.addEventListener('click', paste);
     app.querySelector('#save').onclick = () => {
-      store.upsertSong({ id, chordpro: merged, sourceChart: song.sourceChart || song.chordpro, lyricsText, syncTaps: taps });
+      store.upsertSong({ id, chordpro: merged, sourceChart: song.sourceChart || song.chordpro, lyricsText, syncTaps: taps, syncWords: shiftedWords() });
       toast('Saved — press Count in to play along');
       go(`#/play/song/${id}`);
     };
@@ -579,6 +590,7 @@ function viewSync(id) {
   if (song.syncTaps?.length && song.sourceChart && lyricsText) {
     sections = parseLyrics(lyricsText);
     taps = song.syncTaps.slice();
+    if (song.syncWords) { words = song.syncWords; wordsAt = taps[0]; }
     review(true);
   } else paste();
 }
