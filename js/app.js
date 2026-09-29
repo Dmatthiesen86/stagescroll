@@ -261,11 +261,10 @@ function viewSetlist(id) {
     $('#setHead').textContent = `In this set (${songs.length})`;
     $('#playSet').href = `#/play/set/${id}/0`;
     $('#setSongs').innerHTML = songs.length ? songs.map((s, i) => `
-      <li class="row">
+      <li class="row" data-id="${s.id}">
+        <span class="grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
         <span class="num">${i + 1}</span>
         <a class="grow" href="#/play/set/${id}/${i}"><div class="t">${esc(s.title)}</div><div class="sub">${esc(s.artist)}</div></a>
-        <button class="btn icon" data-act="up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
-        <button class="btn icon" data-act="down" data-i="${i}" ${i === songs.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button>
         <button class="btn icon danger" data-act="rm" data-i="${i}" aria-label="Remove">✕</button>
       </li>`).join('') : '<li class="empty">Add songs from the right.</li>';
     const term = $('#q').value.trim().toLowerCase();
@@ -280,8 +279,6 @@ function viewSetlist(id) {
     const b = e.target.closest('button[data-act]');
     if (!b) return;
     const ids = [...set.songIds], i = +b.dataset.i;
-    if (b.dataset.act === 'up') [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
-    if (b.dataset.act === 'down') [ids[i + 1], ids[i]] = [ids[i], ids[i + 1]];
     if (b.dataset.act === 'rm') ids.splice(i, 1);
     if (b.dataset.act === 'add') {
       if (ids.includes(b.dataset.id)) return;
@@ -290,6 +287,59 @@ function viewSetlist(id) {
     store.upsertSetlist({ id, songIds: ids });
     draw();
   });
+  // Drag a song by its grip to reorder the set (mouse, finger or pen). The row follows the pointer and
+  // the others make room; the page scrolls when you drag near the top or bottom edge.
+  const list = $('#setSongs');
+  let drag = null;
+  const edgeScroll = () => {
+    if (!drag) return;
+    const y = drag.y, band = 70;
+    const speed = y < band ? -(band - y) / 4 : y > innerHeight - band ? (y - (innerHeight - band)) / 4 : 0;
+    if (speed) { scrollBy(0, speed); move(drag.y); }
+    drag.raf = requestAnimationFrame(edgeScroll);
+  };
+  // All positions in page coordinates, so auto-scrolling doesn't pull the row away from the finger.
+  const move = y => {
+    drag.y = y;
+    const { row } = drag;
+    const py = y + scrollY;
+    const naturalTop = () => row.getBoundingClientRect().top + scrollY - (parseFloat(row.style.getPropertyValue('--dy')) || 0);
+    const centre = py - drag.grab + row.offsetHeight / 2;   // where the dragged row's centre is now
+    const others = [...list.children].filter(el => el !== row);
+    const before = others.find(el => { const r = el.getBoundingClientRect(); return centre < r.top + scrollY + r.height / 2; });
+    const oldTop = naturalTop();
+    if (before ? row.nextElementSibling !== before : list.lastElementChild !== row) list.insertBefore(row, before || null);
+    drag.startY += naturalTop() - oldTop;                   // keep the row under the finger after it moves
+    row.style.setProperty('--dy', `${py - drag.startY}px`);
+  };
+  list.addEventListener('pointerdown', e => {
+    const grip = e.target.closest('.grip');
+    if (!grip || drag) return;
+    e.preventDefault();
+    const row = grip.closest('.row');
+    grip.setPointerCapture(e.pointerId);
+    drag = { row, grip, pointer: e.pointerId, startY: e.clientY + scrollY, y: e.clientY, grab: e.clientY - row.getBoundingClientRect().top };
+    row.classList.add('dragging');
+    list.classList.add('reordering');
+    drag.raf = requestAnimationFrame(edgeScroll);
+  });
+  list.addEventListener('pointermove', e => { if (drag && e.pointerId === drag.pointer) move(e.clientY); });
+  const drop = e => {
+    if (!drag || e.pointerId !== drag.pointer) return;
+    cancelAnimationFrame(drag.raf);
+    drag.row.classList.remove('dragging');
+    drag.row.style.removeProperty('--dy');
+    list.classList.remove('reordering');
+    drag = null;
+    const order = [...list.querySelectorAll('.row[data-id]')].map(el => el.dataset.id);
+    if (order.join() !== set.songIds.filter(x => order.includes(x)).join()) {
+      store.upsertSetlist({ id, songIds: [...order, ...set.songIds.filter(x => !order.includes(x))] });
+    }
+    draw();
+  };
+  list.addEventListener('pointerup', drop);
+  list.addEventListener('pointercancel', drop);
+
   $('#name').onchange = e => store.upsertSetlist({ id, name: e.target.value.trim() || 'Untitled set' });
   $('#q').oninput = draw;
   $('#delSet').onclick = () => { if (confirm(`Delete setlist "${set.name}"? Songs stay in your library.`)) { store.deleteSetlist(id); go('#/sets'); } };
