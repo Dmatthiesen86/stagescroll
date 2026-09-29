@@ -48,6 +48,12 @@ export function renderSheet(parsed, { transpose = 0, flats = false } = {}) {
     if (it.type === 'blank') { out.push('<div class="gap"></div>'); continue; }
 
     const hasCh = it.segs.some(s => s.chord);
+    const cls = `${it.section ? ` in-${esc(it.section)}` : ''}`;
+    // Chord-only lines ("| [Am] | % | [G] |" or "[C] [Cmaj7] [F]") render as a chart, not over empty lyrics.
+    if (hasCh && it.segs.every(s => /^[\s|%]*$/.test(s.text))) {
+      out.push(renderChart(it.segs, tc, cls, li++));
+      continue;
+    }
     let html = '', prevSpace = true;
     for (const seg of it.segs) {
       const toks = seg.text.match(/\S+\s*|\s+/g) || [''];
@@ -64,9 +70,31 @@ export function renderSheet(parsed, { transpose = 0, flats = false } = {}) {
         html += `<span class="seg">${hasCh ? `<span class="ch">${esc(chord)}</span>` : ''}<span class="ly">${inner || '&nbsp;'}</span></span>`;
       });
     }
-    out.push(`<div class="line${hasCh ? ' has-ch' : ''}${it.section ? ` in-${esc(it.section)}` : ''}" data-l="${li++}">${html}</div>`);
+    out.push(`<div class="line${hasCh ? ' has-ch' : ''}${cls}" data-l="${li++}">${html}</div>`);
   }
   return out.join('');
+}
+
+function renderChart(segs, tc, cls, li) {
+  const chordHtml = c => `<span class="ch-in">${esc(tc(c))}</span>`;
+  if (!segs.some(s => s.text.includes('|'))) {
+    return `<div class="line chart${cls}" data-l="${li}">${segs.map(s => s.chord ? chordHtml(s.chord) : '').join('')}</div>`;
+  }
+  // Bar chart: one equal-width cell per bar so columns line up from row to row.
+  const cells = [];
+  let cell = null;
+  const add = html => { (cell ||= []).push(html); };
+  for (const s of segs) {
+    if (s.chord) add(chordHtml(s.chord));
+    for (const ch of s.text) {
+      if (ch === '|') { if (cell) cells.push(cell); cell = []; }
+      else if (ch === '%') add('<span class="rep" title="Same chord as the bar before">%</span>');
+    }
+  }
+  if (cell && cell.length) cells.push(cell);
+  const cols = Math.max(4, cells.length);
+  return `<div class="line chart bars${cls}" data-l="${li}" style="--cols:${cols}">${
+    cells.map(c => `<span class="cell">${c.join('')}</span>`).join('')}</div>`;
 }
 
 // ---------------------------------------------------------------- shell / backup

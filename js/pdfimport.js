@@ -3,6 +3,7 @@
 // Either way, words are placed back on a character grid from their positions on the page,
 // which recreates the chords-above-lyrics layout for plainToChordPro().
 import { plainToChordPro, isChord } from './chordpro.js';
+import { isChordifyPdf, chordifyToChordPro } from './chordify.js';
 
 const VENDOR = new URL('./vendor/', import.meta.url).href;
 const OCR_SCALE = 3; // ~30px text height on a letter/A4 page — Tesseract's sweet spot
@@ -16,6 +17,11 @@ export async function pdfToChordPro(file, onProgress = () => {}) {
   const lines = [];
   let ocr = null;
   try {
+    const firstTexts = (await (await doc.getPage(1)).getTextContent()).items.map(i => i.str || '');
+    if (isChordifyPdf(firstTexts)) {
+      onProgress('Reading Chordify chart…');
+      return await chordifyToChordPro(doc, file.name.replace(/\.pdf$/i, '').replace(/^Chordify_/i, ''));
+    }
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p);
       const items = (await page.getTextContent()).items.filter(i => i.str && i.str.trim());

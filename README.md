@@ -38,6 +38,9 @@ Open http://localhost:5173 in **Chrome or Edge** (voice follow needs their speec
   skips the chord-diagram page, and repairs common misreads of bold chord names. Guitar tab
   doesn't OCR well, so tab areas are kept as boxed reference blocks. A single PDF opens in the
   editor afterwards — give it a quick look before the gig.
+- **Chordify PDFs**: recognised automatically and turned into a bar-by-bar chord chart
+  (4 bars per row, `%` = same chord as the bar before, two chords in a bar = split bar), with
+  tempo and length filled in so auto-scroll matches the song. F△ is read as Fmaj7.
 - **Setlists**: build, reorder, play. Tapping a song in a set starts from there.
 
 ### Perform controls
@@ -77,5 +80,6 @@ scroll carries you through solos and instrumental breaks.
 - `js/app.js` — UI: library, setlists, editor, perform view
 - `js/store.js` — localStorage persistence, import/export
 - `js/pdfimport.js` — PDF → ChordPro (pdf.js text layer, or Tesseract OCR for image PDFs)
+- `js/chordify.js` — Chordify lead sheet → bar chart (finds staff and bar lines on the rendered page)
 - `js/vendor/` — pdf.js (Apache-2.0) and Tesseract.js (Apache-2.0), bundled for offline use
 - `sw.js` — offline cache (works once hosted over HTTPS or on localhost)

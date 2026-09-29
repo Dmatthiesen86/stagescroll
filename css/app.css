@@ -119,3 +119,13 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: v
 .spinner { width: 22px; height: 22px; flex: none; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent);
   animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* chord charts (lines with only chords / bar lines) */
+.sheet .line.chart { gap: .2em .8em; align-items: baseline; }
+.sheet .ch-in { color: var(--chord); font-weight: 700; }
+.sheet .line.bars { display: grid; grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr)); gap: 0;
+  margin: .15em 0; }
+.sheet .bars .cell:last-child { border-right: 2px solid var(--line); }
+.sheet .bars .cell { display: flex; flex-wrap: wrap; gap: 0 .5em; align-items: baseline; padding: .15em .5em;
+  border-left: 2px solid var(--line); min-width: 0; }
+.sheet .bars .rep { color: var(--muted); }
