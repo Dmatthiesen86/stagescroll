@@ -2,20 +2,34 @@
 
 const CHORD_RE = /^[A-G][#b]?(?:m(?!aj)|maj|min|dim|aug|sus|add|M|\+|°|ø)?\d*(?:(?:sus|add|maj|b|#|\+|-)\d*)*(?:\/[A-G][#b]?)?$/;
 const FILLER_RE = /^(\||x\d+|\d+x|N\.?C\.?|-+|\/|\.{2,}|%)$/i;
-const HEADER_RE = /^\[([^\]]+)\]$/;
+const HEADER_RE = /^\[([^\]]+)\]\s*(\([^)]*\))?\s*$/;   // "[Chorus]", also "[Chorus] (play loud)"
 const TAB_LINE_RE = /^[A-Ga-g]?\s*\|[-\d|hpbrsx~\/\\()^. ]+\|?\s*$/;
 
 export const isChord = t => CHORD_RE.test(String(t).replace(/^\(|\)$/g, ''));
 
+// Notes UG writes on chord lines: "(Hold)", "(x2)", "[Riff]" — not chords, but worth keeping.
+// A chord in parentheses — "(D)", a held/optional chord — is still a chord, not a note.
+const lineNotes = line => [
+  ...(line.match(/\([^)]*\)/g) || []).filter(m => !isChord(m.slice(1, -1))),
+  ...[...line.matchAll(/\[([^\]]+)\]/g)].filter(m => !isChord(m[1])).map(m => `(${m[1]})`),
+];
+const withoutNotes = line => line.replace(/\(([^)]*)\)/g, (m, x) => (isChord(x) ? m : ' '.repeat(m.length)))
+  .replace(/\[([^\]]+)\]/g, (m, x) => (isChord(x) ? x.padEnd(m.length) : ' '.repeat(m.length)));
+
+// A speck of OCR noise on a chord line ("[5", "+4", "(o-") — short and mostly symbols.
+export const isNoiseToken = t => t.length <= 3 && /[^A-Za-z0-9#/]/.test(t) && !/[a-z]{2}/i.test(t);
+
 export function isChordLine(line) {
-  const tokens = line.trim().split(/\s+/).filter(Boolean);
+  const tokens = withoutNotes(line).trim().split(/\s+/).filter(Boolean);
   if (!tokens.length) return false;
-  let chords = 0;
+  let chords = 0, noise = 0;
   for (const t of tokens) {
     if (isChord(t)) chords++;
-    else if (!FILLER_RE.test(t)) return false;
+    else if (FILLER_RE.test(t)) continue;          // bar lines, x2, N.C. … (before the noise check)
+    else if (isNoiseToken(t)) noise++;
+    else return false;
   }
-  return chords > 0;
+  return chords > 0 && noise * 2 <= chords;   // tolerate a little noise, never a line of it
 }
 
 const isTabLine = line => TAB_LINE_RE.test(line);
@@ -60,7 +74,7 @@ export function plainToChordPro(text) {
     const hdr = trimmed.match(HEADER_RE);
     if (hdr && !isChord(hdr[1])) {
       close();
-      const label = hdr[1].trim();
+      const label = hdr[1].trim() + (hdr[2] ? ' ' + hdr[2] : '');
       open = /chorus/i.test(label) ? 'chorus' : /bridge/i.test(label) ? 'bridge' : 'verse';
       out.push(`{start_of_${open}: ${label}}`);
       continue;
@@ -78,20 +92,29 @@ export function plainToChordPro(text) {
 
     if (isChordLine(line)) {
       const next = lines[i + 1];
+      const notes = lineNotes(line).join(' ');
+      const chordsOnly = withoutNotes(line);
       if (next !== undefined && next.trim() && !isChordLine(next) && !HEADER_RE.test(next.trim()) && !isTabLine(next) && !/^\{.*\}$/.test(next.trim())) {
-        out.push(mergeChords(line, next));
+        out.push(mergeChords(chordsOnly, plainBrackets(next)) + (notes ? '  ' + notes : ''));
         i++;
+      } else if (chordsOnly.includes('|')) {
+        // "| Bm7 | G Gadd9 D | Dsus2 |" keeps its bars, so it shows as a bar chart
+        out.push(chordsOnly.trim().split(/\s+/).map(t => (isChord(t) ? `[${t.replace(/^\(|\)$/g, '')}]` : t === '|' ? '|' : '')).filter(Boolean).join(' ') + (notes ? '  ' + notes : ''));
       } else {
-        out.push(line.trim().split(/\s+/).filter(isChord).map(c => `[${c.replace(/^\(|\)$/g, '')}]`).join(' '));
+        out.push(chordsOnly.trim().split(/\s+/).filter(isChord).map(c => `[${c.replace(/^\(|\)$/g, '')}]`).join(' ') + (notes ? '  ' + notes : ''));
       }
       continue;
     }
 
-    out.push(line.replace(/\s+$/, ''));
+    out.push(plainBrackets(line).replace(/\s+$/, ''));
   }
   close();
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
+
+// In a lyric line, a bracketed word that isn't a chord ("[Riff]") would be read as a chord in
+// ChordPro — show it as a note instead.
+const plainBrackets = line => line.replace(/\[([^\]]+)\]/g, (m, x) => (isChord(x) ? m : `(${x})`));
 
 function mergeChords(chordLine, lyric) {
   const marks = [];

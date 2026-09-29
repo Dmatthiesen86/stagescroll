@@ -2,7 +2,7 @@
 // text layer are rendered and run through OCR (Tesseract, bundled so it works offline).
 // Either way, words are placed back on a character grid from their positions on the page,
 // which recreates the chords-above-lyrics layout for plainToChordPro().
-import { plainToChordPro, isChord } from './chordpro.js';
+import { plainToChordPro, isChord, isNoiseToken } from './chordpro.js';
 import { isChordifyPdf, chordifyToChordPro } from './chordify.js';
 
 const VENDOR = new URL('./vendor/', import.meta.url).href;
@@ -155,6 +155,7 @@ function repairChordLines(lines) {
   }
   const fix = t => {
     if (isChord(t) || FILLER.test(t)) return t;
+    if (isNoiseToken(t)) return '';                                  // OCR speck on a chord line
     if (t === '€') return 'C';
     const dbl = t.match(/^([A-G])([a-g])$/);
     if (dbl && dbl[2].toUpperCase() === dbl[1]) return dbl[1];      // "Cc" → "C"
@@ -183,7 +184,10 @@ function repairChordLines(lines) {
 // OCR mangles guitar tab (long dash runs), so tab areas are boxed as {start_of_tab} blocks:
 // shown monospaced for reference, and kept out of the lyrics that voice follow listens for.
 const isChordBars = l => l.trim().split(/\s+/).every(t => isChord(t) || t === '|'); // "| C  Cmaj7 | F |"
-const isTabby = l => !isChordBars(l) && ((l.match(/\|/g) || []).length >= 2 || /-{3,}/.test(l) || /\d\s*&\s*\d/.test(l));
+// A line that's mostly words is lyrics, even with dashes in it — UG writes held syllables as
+// "so----orry" (The Scientist).
+const wordy = l => (l.match(/[A-Za-z]/g) || []).length > 0.4 * l.replace(/\s/g, '').length && /[a-z]{3}/.test(l);
+const isTabby = l => !isChordBars(l) && ((l.match(/\|/g) || []).length >= 2 || (/-{3,}/.test(l) && !wordy(l)) || /\d\s*&\s*\d/.test(l));
 function isJunk(l) {
   const toks = l.trim().split(/\s+/).filter(Boolean);
   if (!toks.length) return false;
