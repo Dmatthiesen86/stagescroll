@@ -52,6 +52,11 @@ Open http://localhost:5173 in **Chrome or Edge** (voice follow needs their speec
   builds a song whose lines carry the chords from the bars they span (intros and solos stay as
   bar rows), and **Count in** then plays it karaoke-style. The original chart is kept for re-syncing.
   Timing lives in `{x_at: bar:beat}` lines in the ChordPro.
+- **Capo** (perform view): pick a fret and the chords turn into the shapes you'd play there — the
+  song still sounds in the same key (♭/♯ is what changes the key you sing in). The chooser lists
+  every fret with its shapes and a difficulty rating (open chords easy, barre chords hard) and
+  marks the **Easiest**. Sheets that already say `{capo: 2}` keep showing their written shapes.
+  The choice is saved per song.
 - **Setlists**: build, reorder, play. Tapping a song in a set starts from there.
 
 ### Perform controls
@@ -93,6 +98,7 @@ scroll carries you through solos and instrumental breaks.
 - `js/pdfimport.js` — PDF → ChordPro (pdf.js text layer, or Tesseract OCR for image PDFs)
 - `js/timeline.js` — tempo clock (count-in, metronome) and timed playback of bars and lines
 - `js/lyricsync.js` — merges tap-along lyrics into a bar chart
+- `js/capo.js` — chord-shape difficulty and capo recommendations
 - `js/chordify.js` — Chordify lead sheet → bar chart (finds staff and bar lines on the rendered page)
 - `js/vendor/` — pdf.js (Apache-2.0) and Tesseract.js (Apache-2.0), bundled for offline use
 - `sw.js` — offline cache (works once hosted over HTTPS or on localhost)

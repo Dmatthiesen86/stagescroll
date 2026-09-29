@@ -3,6 +3,7 @@ import { parseChordPro, plainToChordPro, transposeChord, keyPrefersFlats, isChor
 import { VoiceFollower } from './follow.js';
 import { TimelinePlayer, Clock, parseAt } from './timeline.js';
 import { chartBars, parseLyrics, buildMerged } from './lyricsync.js';
+import { songChords, capoOptions, difficultyLabel, friendly } from './capo.js';
 
 const app = document.getElementById('app');
 const S = store.settings;
@@ -42,7 +43,7 @@ window.addEventListener('hashchange', route);
 export function renderSheet(parsed, { transpose = 0, flats = false } = {}) {
   const out = [];
   let w = 0, li = 0;
-  const tc = ch => (isChord(ch) ? transposeChord(ch, transpose, flats) : ch);
+  const tc = ch => (!isChord(ch) ? ch : flats === null ? friendly(transposeChord(ch, transpose, false)) : transposeChord(ch, transpose, flats));
 
   for (const it of parsed.items) {
     if (it.type === 'section') { out.push(`<div class="sec sec-${esc(it.kind)}">${esc(it.label)}</div>`); continue; }
@@ -567,6 +568,7 @@ function viewPerform(songIds, startIdx, set) {
       </header>
       <div class="stage" id="stage"><div class="sheet" id="sheet"></div></div>
       <div class="countin" id="countin" hidden></div>
+      <div class="capo-panel" id="capoPanel" hidden></div>
       <div class="heard" id="heard" hidden></div>
       <footer class="pctl">
         <div class="grp">
@@ -590,6 +592,7 @@ function viewPerform(songIds, startIdx, set) {
           <button class="btn icon" data-a="down" title="Transpose down">♭</button>
           <span class="val" id="trVal" title="Transpose"></span>
           <button class="btn icon" data-a="up" title="Transpose up">♯</button>
+          <button class="btn" data-a="capo" id="capoBtn" title="Capo: pick a fret and see the shapes to play there">Capo</button>
         </div>
       </footer>
     </div>`;
@@ -678,6 +681,7 @@ function viewPerform(songIds, startIdx, set) {
     if (set) history.replaceState(null, '', `#/play/set/${set.id}/${idx}`);
     setPlaying(false);
     player.reset();
+    capoPanel.hidden = true;
     voiceRate = 1; target = null;
     drawSheet(false);
     stage.scrollTop = 0; pos = null;
@@ -688,9 +692,12 @@ function viewPerform(songIds, startIdx, set) {
     const max0 = Math.max(1, stage.scrollHeight - stage.clientHeight);
     const ratio = keepPlace ? stage.scrollTop / max0 : 0;
     const n = song.transpose || 0;
-    const flats = keyPrefersFlats(parsed.meta.key, n);
+    // The sheet's own {capo} means its chords are already shapes for that fret. Display shift =
+    // transpose (changes the sounding key) + sheet capo − chosen capo (changes only the shapes).
+    const { sheetCapo, capo, shift } = capoState();
+    const flats = parsed.meta.key ? keyPrefersFlats(parsed.meta.key, shift) : null;
     const next = set && idx < ids.length - 1 ? store.getSong(ids[idx + 1]) : null;
-    sheet.innerHTML = renderSheet(parsed, { transpose: n, flats }) + `
+    sheet.innerHTML = renderSheet(parsed, { transpose: shift, flats }) + `
       <div class="endcard">${next
         ? `<div class="sub">Up next</div><button class="btn primary big" data-a="next">${esc(next.title)} →</button>`
         : `<div class="sub">${set ? 'End of set' : 'End of song'}</div>`}</div>`;
@@ -715,8 +722,8 @@ function viewPerform(songIds, startIdx, set) {
     const m = parsed.meta;
     $('#pTitle').textContent = song.title;
     $('#pSub').textContent = [song.artist,
-      m.key && `Key ${transposeChord(m.key, n, flats)}${n ? ` (${n > 0 ? '+' : ''}${n})` : ''}`,
-      m.capo && `Capo ${m.capo}`, m.tempo && `${m.tempo} bpm`].filter(Boolean).join(' · ');
+      m.key && `Key ${transposeChord(m.key, n + sheetCapo, !!keyPrefersFlats(m.key, n + sheetCapo))}${n ? ` (${n > 0 ? '+' : ''}${n})` : ''}`,
+      capo && `Capo ${capo}`, m.tempo && `${m.tempo} bpm`].filter(Boolean).join(' · ');
     if (!player.running) showPos();
     if (keepPlace) { stage.scrollTop = ratio * Math.max(1, stage.scrollHeight - stage.clientHeight); pos = null; }
     updateControls();
@@ -748,6 +755,10 @@ function viewPerform(songIds, startIdx, set) {
     heardEl.hidden = !(voiceOn && S.showHeard);
     const n = song.transpose || 0;
     $('#trVal').textContent = n ? (n > 0 ? `+${n}` : n) : '0';
+    const { capo } = capoState();
+    $('#capoBtn').textContent = capo ? `Capo ${capo}` : 'Capo';
+    $('#capoBtn').classList.toggle('on', capo > 0);
+    $('#capoBtn').hidden = !songChords(parsed).size;
   }
 
   function setPlaying(v) { playing = v; updateControls(); }
@@ -834,6 +845,40 @@ function viewPerform(songIds, startIdx, set) {
     }
     updateControls();
   };
+  function capoState() {
+    const sheetCapo = parseInt(parsed.meta.capo, 10) || 0;
+    const capo = song.capo ?? sheetCapo;
+    return { sheetCapo, capo, shift: (song.transpose || 0) + sheetCapo - capo };
+  }
+
+  // Capo chooser: every fret, the shapes you'd play there, and how hard they are.
+  const capoPanel = $('#capoPanel');
+  function openCapo() {
+    const { sheetCapo, capo } = capoState();
+    const { options, best } = capoOptions(songChords(parsed), (song.transpose || 0) + sheetCapo);
+    capoPanel.innerHTML = `
+      <div class="capo-head"><b>Capo</b><span class="sub grow">Same key, different shapes. ♭/♯ changes the key you sing in.</span>
+        <button class="btn ghost icon" data-capo-close title="Close">✕</button></div>
+      <div class="capo-list">${options.map(o => `
+        <button class="capo-row${o.capo === capo ? ' on' : ''}" data-capo="${o.capo}">
+          <span class="capo-fret">${o.capo ? `Fret ${o.capo}` : 'No capo'}</span>
+          <span class="capo-shapes">${o.shapes.map(esc).join('  ')}</span>
+          <span class="capo-diff d${Math.min(4, Math.floor(o.score))}">${difficultyLabel(o.score)}${o.barre ? ` · ${o.barre} barre` : ''}</span>
+          ${o.capo === options[best].capo ? '<span class="capo-best">Easiest</span>' : ''}
+        </button>`).join('')}</div>`;
+    capoPanel.hidden = false;
+  }
+  const closeCapo = () => { capoPanel.hidden = true; };
+  capoPanel.addEventListener('click', e => {
+    e.stopPropagation();
+    if (e.target.closest('[data-capo-close]')) return closeCapo();
+    const row = e.target.closest('[data-capo]');
+    if (!row) return;
+    song = store.upsertSong({ id: song.id, capo: +row.dataset.capo });
+    closeCapo();
+    drawSheet(true);
+  });
+
   const transpose = d => {
     let n = (song.transpose || 0) + d;
     if (n > 11) n -= 12;
@@ -852,6 +897,7 @@ function viewPerform(songIds, startIdx, set) {
     bigger: () => { S.fontScale = clamp(+(S.fontScale + 0.1).toFixed(2), 0.6, 2.5); store.save(); drawSheet(true); },
     chords: () => { S.showChords = !S.showChords; store.save(); drawSheet(true); },
     down: () => transpose(-1), up: () => transpose(1),
+    capo: () => (capoPanel.hidden ? openCapo() : closeCapo()),
     sync: () => go(`#/sync/${song.id}`),
     fs: () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.()),
   };
@@ -883,7 +929,7 @@ function viewPerform(songIds, startIdx, set) {
       ArrowUp: () => page(-1), PageUp: () => page(-1), ArrowLeft: () => page(-1),
       n: actions.next, N: actions.next, p: actions.prev, P: actions.prev,
       '+': actions.faster, '=': actions.faster, '-': actions.slower, _: actions.slower,
-      v: actions.voice, V: actions.voice, Escape: exit,
+      v: actions.voice, V: actions.voice, Escape: () => (capoPanel.hidden ? exit() : closeCapo()),
     };
     if (map[k]) { e.preventDefault(); map[k](); }
   };
