@@ -187,3 +187,5 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: v
   .capo-row { grid-template-columns: 4.5em 1fr; }
   .capo-diff, .capo-best { grid-column: 2; justify-self: start; }
 }
+.shift { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
+.shift .sub { white-space: normal; }

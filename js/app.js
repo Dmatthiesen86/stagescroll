@@ -1,7 +1,7 @@
 import * as store from './store.js';
 import { parseChordPro, plainToChordPro, transposeChord, keyPrefersFlats, isChord } from './chordpro.js';
 import { VoiceFollower } from './follow.js';
-import { TimelinePlayer, Clock, parseAt } from './timeline.js';
+import { TimelinePlayer, Clock, parseAt, formatAt } from './timeline.js';
 import { chartBars, parseLyrics, buildMerged } from './lyricsync.js';
 import { songChords, capoOptions, difficultyLabel, friendly } from './capo.js';
 
@@ -526,31 +526,58 @@ function viewSync(id) {
     draw();
   }
 
-  // Step 3: review and save
-  function review() {
+  // Step 3: review, shift the timing if needed, and save
+  function review(adjusting = false) {
     cancelAnimationFrame(raf); offKey();
-    const total = sections.reduce((k, s) => k + s.lines.length, 0);
-    const merged = buildMerged({
+    const total = sections.reduce((k, x) => k + x.lines.length, 0);
+    const build = () => buildMerged({
       meta: { ...chart.meta, title: song.title, artist: song.artist, tempo: +chart.meta.tempo || bpm },
       bars, bpb, sections, taps,
     });
+    let merged = build();
     shell('songs', `
-      <div class="toolbar"><h2 class="grow">Review — ${esc(song.title)}</h2>
-        <button class="btn" id="again">↶ Tap again</button>
+      <div class="toolbar"><h2 class="grow">${adjusting ? 'Adjust timing' : 'Review'} — ${esc(song.title)}</h2>
+        ${adjusting ? '<button class="btn" id="edit">Edit lyrics</button>' : ''}
+        <button class="btn" id="again">↶ ${adjusting ? 'Tap along instead' : 'Tap again'}</button>
         <button class="btn primary" id="save">Save</button></div>
-      ${taps.length < total ? `<p class="warn">Only ${taps.length} of ${total} lines were tapped — the rest are left out. Tap again to include them.</p>` : ''}
-      <p class="sub wrap">Chords inside a line are placed by timing, so one may sit a word early or late — nudge it in the
-        editor afterwards. The original chart is kept, so you can re-sync any time.</p>
-      <div class="preview sheet review" id="prev">${renderSheet(parseChordPro(merged))}</div>`);
+      ${taps.length < total ? `<p class="warn">Only ${taps.length} of ${total} lines have timing — the rest are left out. Tap again to include them.</p>` : ''}
+      <div class="shift">
+        <span class="sub">If the chords sit on the wrong words, move all the lyrics:</span>
+        <button class="btn" data-shift="${-bpb}">−1 bar</button>
+        <button class="btn" data-shift="-0.5">−½ beat</button>
+        <button class="btn" data-shift="0.5">+½ beat</button>
+        <button class="btn" data-shift="${bpb}">+1 bar</button>
+        <span class="sub" id="firstAt"></span>
+      </div>
+      <div class="preview sheet review" id="prev"></div>`);
+    const draw = () => {
+      merged = build();
+      app.querySelector('#prev').innerHTML = renderSheet(parseChordPro(merged));
+      app.querySelector('#firstAt').textContent = `First line: bar ${formatAt(taps[0], bpb).replace(':', ', beat ')}`;
+      app.querySelectorAll('[data-shift]').forEach(b => { b.disabled = taps[0] + +b.dataset.shift < 0; });
+    };
+    draw();
+    app.querySelector('.shift').addEventListener('click', e => {
+      const b = e.target.closest('[data-shift]');
+      if (!b) return;
+      taps = taps.map(t => t + +b.dataset.shift);
+      draw();
+    });
     app.querySelector('#again').onclick = () => { taps = []; tapAlong(); };
+    app.querySelector('#edit')?.addEventListener('click', paste);
     app.querySelector('#save').onclick = () => {
-      store.upsertSong({ id, chordpro: merged, sourceChart: song.sourceChart || song.chordpro, lyricsText });
+      store.upsertSong({ id, chordpro: merged, sourceChart: song.sourceChart || song.chordpro, lyricsText, syncTaps: taps });
       toast('Saved — press Count in to play along');
       go(`#/play/song/${id}`);
     };
   }
 
-  paste();
+  // A song that's already synced opens on the timing adjuster; otherwise start by pasting lyrics.
+  if (song.syncTaps?.length && song.sourceChart && lyricsText) {
+    sections = parseLyrics(lyricsText);
+    taps = song.syncTaps.slice();
+    review(true);
+  } else paste();
 }
 
 // ---------------------------------------------------------------- perform
