@@ -75,7 +75,7 @@ export function parseLyrics(text) {
 }
 
 // sections: from parseLyrics; taps: beat position for each lyric line, in order (may be shorter).
-export function buildMerged({ meta, bars, bpb, sections, taps }) {
+export function buildMerged({ meta, bars, bpb, sections, taps, notes = [] }) {
   const lines = sections.flatMap((s, si) => s.lines.map((text, k) => ({ text, section: si, first: k === 0 })));
   const n = Math.min(lines.length, taps.length);
   const totalBeats = bars.length * bpb;
@@ -100,6 +100,8 @@ export function buildMerged({ meta, bars, bpb, sections, taps }) {
   if (meta.title) head.push(`{title: ${meta.title}}`);
   if (meta.artist) head.push(`{artist: ${meta.artist}}`);
   if (meta.key) head.push(`{key: ${meta.key}}`);
+  if (meta.capo) head.push(`{capo: ${meta.capo}}`);
+  for (const n of notes) head.push(`{comment: ${n}}`);
   if (meta.tempo) head.push(`{tempo: ${meta.tempo}}`);
   head.push(`{time: ${bpb}/4}`);
   if (meta.duration) head.push(`{duration: ${Math.floor(meta.duration / 60)}:${String(meta.duration % 60).padStart(2, '0')}}`);

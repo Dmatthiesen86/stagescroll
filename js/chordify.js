@@ -12,7 +12,8 @@ export const isChordifyPdf = texts => texts.some(t => /chordify\.net|tune into c
 
 // makeCanvas(w, h) lets tests supply a canvas outside the browser.
 export async function chordifyToChordPro(doc, fallbackTitle, makeCanvas = defaultCanvas) {
-  let title = '', tempo = 0;
+  let title = '', tempo = 0, capo = 0;
+  const notes = [];
   const measures = [];
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
@@ -27,9 +28,17 @@ export async function chordifyToChordPro(doc, fallbackTitle, makeCanvas = defaul
     // Keep blank items too: Chordify's noteheads come through as blank music-font glyphs.
     const items = (await page.getTextContent()).items.filter(i => typeof i.str === 'string').map(i => {
       const [x, y] = vp.convertToViewportPoint(i.transform[4], i.transform[5]);
-      return { str: i.str.trim(), x, y, w: i.width * SCALE, h: Math.abs(i.transform[3]) * SCALE, font: i.fontName };
+      return { str: i.str.trim(), raw: i.str, x, y, w: i.width * SCALE, rawW: i.width, h: Math.abs(i.transform[3]) * SCALE, font: i.fontName };
     });
+    glueChordNames(items);
     if (p === 1) {
+      // Chordify notes under the title: "Capo on fret 2", "… from E♭ to C (3 semitones down)".
+      for (const it of items) {
+        if (it.part) continue;
+        const cp = it.str.match(/capo on fret (\d+)/i);
+        if (cp) { capo = +cp[1]; notes.push(it.str); }
+        else if (/semitones?\s+(up|down)/i.test(it.str)) notes.push(it.str);
+      }
       const top = items.filter(i => !/chordify/i.test(i.str) && i.str.length > 3 && !/=/.test(i.str)).sort((a, b) => a.y - b.y)[0];
       title = top?.str || '';
       const t = items.find(i => /=\s*\d{2,3}/.test(i.str));
@@ -38,7 +47,36 @@ export async function chordifyToChordPro(doc, fallbackTitle, makeCanvas = defaul
     measures.push(...pageMeasures(img, items));
     canvas.width = canvas.height = 0;
   }
-  return buildChart(measures, title || fallbackTitle, tempo);
+  return buildChart(measures, title || fallbackTitle, tempo, capo, notes);
+}
+
+// Chordify writes a chord name in pieces: the letter and suffixes ("m", "7", raised "5", "/F") as text,
+// and ♯ / ♭ as music-font characters whose codes differ between files. The ♯ glyph is ~4.9 units wide,
+// the ♭ ~3.6, so width tells them apart. Pieces that continue a chord (or a note line) are glued onto it
+// and marked as parts.
+function glueChordNames(items) {
+  const textFont = items.find(i => /^[A-G]$/.test(i.str) || /^N\.?C\.?$/.test(i.str))?.font;
+  const isGlyph = i => i.font !== textFont && /^[\u0000-\u0003]$/.test(i.str);
+  for (let k = 0; k < items.length; k++) {
+    const a = items[k];
+    if (a.part || a.font !== textFont || !a.str) continue;
+    let end = a.x + a.w;
+    for (let j = k + 1; j < items.length; j++) {
+      const b = items[j];
+      if (b.raw === '') continue;
+      if (Math.abs(b.x - end) > 3 || Math.abs(b.y - a.y) > 16) break;
+      if (/^\s+$/.test(b.raw)) {
+        if (/^([A-G]|N\.C)/.test(a.str) || b.rawW > 4) break; // a chord name never spans a space, nor does a wide gap…
+        a.str += ' ';                                  // …but a note line ("Transposed from D♭ to A") does
+      } else if (isGlyph(b)) a.str += b.rawW > 4.2 ? '#' : 'b';
+      else if (b.font === textFont) a.str += b.str;
+      else break;
+      b.part = true;
+      end = b.x + b.w;
+      a.w = end - a.x;
+    }
+    a.str = a.str.replace(/\s+/g, ' ').trim();
+  }
 }
 
 function defaultCanvas(w, h) {
@@ -83,7 +121,7 @@ function pageMeasures(img, items) {
     }
   }
 
-  const chordItems = items.filter(i => isChord(i.str) || /^N\.?C\.?$/i.test(i.str));
+  const chordItems = items.filter(i => !i.part && (isChord(i.str) || /^N\.?C\.?$/i.test(i.str)));
   const out = [];
   for (const st of staves) {
     // Noteheads/rests (music-font glyphs in the staff): they mark each bar's first beat, and the
@@ -155,7 +193,7 @@ function withSuperscript(c, items, dark, W, H) {
 }
 
 // ---- output
-function buildChart(measures, rawTitle, tempo) {
+function buildChart(measures, rawTitle, tempo, capo = 0, notes = []) {
   let artist = '', title = rawTitle;
   const split = rawTitle.match(/^(.+?)\s+-\s+(.+)$/);
   if (split) { artist = split[1]; title = split[2]; }
@@ -172,6 +210,8 @@ function buildChart(measures, rawTitle, tempo) {
 
   const head = [`{title: ${title}}`];
   if (artist) head.push(`{artist: ${artist}}`);
+  if (capo) head.push(`{capo: ${capo}}`);
+  for (const n of notes) if (!/capo on fret/i.test(n)) head.push(`{comment: Chordify: ${n.replace(/([A-G])#/g, '$1♯').replace(/([A-G])b\b/g, '$1♭')}}`);
   if (tempo) {
     head.push(`{tempo: ${tempo}}`, '{time: 4/4}');
     const secs = Math.round(bars.length * 4 * 60 / tempo); // Chordify charts are in 4/4

@@ -43,7 +43,9 @@ window.addEventListener('hashchange', route);
 export function renderSheet(parsed, { transpose = 0, flats = false } = {}) {
   const out = [];
   let w = 0, li = 0;
-  const tc = ch => (!isChord(ch) ? ch : flats === null ? friendly(transposeChord(ch, transpose, false)) : transposeChord(ch, transpose, flats));
+  // Untransposed chords keep the sheet's own spelling (D♯ stays D♯); transposed ones with no key
+  // to go by get guitar-friendly names (B♭ rather than A♯).
+  const tc = ch => (!isChord(ch) || !transpose ? ch : flats === null ? friendly(transposeChord(ch, transpose, false)) : transposeChord(ch, transpose, flats));
 
   for (const it of parsed.items) {
     if (it.type === 'section') { out.push(`<div class="sec sec-${esc(it.kind)}">${esc(it.label)}</div>`); continue; }
@@ -533,6 +535,7 @@ function viewSync(id) {
     const build = () => buildMerged({
       meta: { ...chart.meta, title: song.title, artist: song.artist, tempo: +chart.meta.tempo || bpm },
       bars, bpb, sections, taps,
+      notes: chart.items.filter(i => i.type === 'comment').map(i => i.text), // e.g. Chordify's transposition note
     });
     let merged = build();
     shell('songs', `
