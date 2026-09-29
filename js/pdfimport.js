@@ -6,7 +6,8 @@ import { plainToChordPro, isChord, isNoiseToken } from './chordpro.js';
 import { isChordifyPdf, chordifyToChordPro } from './chordify.js';
 
 const VENDOR = new URL('./vendor/', import.meta.url).href;
-const OCR_SCALE = 3; // ~30px text height on a letter/A4 page — Tesseract's sweet spot
+const OCR_SCALE = 3;
+export let lastRawLines = null; // ~30px text height on a letter/A4 page — Tesseract's sweet spot
 
 export async function pdfToChordPro(file, onProgress = () => {}) {
   onProgress('Opening PDF…');
@@ -38,6 +39,7 @@ export async function pdfToChordPro(file, onProgress = () => {}) {
     await ocr?.terminate();
     task.destroy();
   }
+  lastRawLines = lines; // kept for troubleshooting imports
   return ugTextToChordPro(lines, file.name.replace(/\.pdf$/i, ''));
 }
 
@@ -171,7 +173,10 @@ function repairChordLines(lines) {
     const toks = [...l.matchAll(/\S+/g)];
     if (!toks.length) return l;
     const valid = toks.filter(m => isChord(m[0]) || FILLER.test(m[0])).length;
-    if (valid === toks.length || valid < toks.length / 2) return l;
+    // "Cc" (a bold C misread) counts toward the line being mostly chords — "Cc  F  Cc" in O Holy Night —
+    // but not toward it needing no repair.
+    const likely = valid + toks.filter(m => /^([A-G])\1$/i.test(m[0])).length;
+    if (valid === toks.length || likely < toks.length / 2) return l;
     const fixed = toks.map(m => fix(m[0]));
     if (fixed.some(f => f === null)) return l;
     let out = '';
@@ -216,20 +221,32 @@ function groupTabs(lines) {
 function ugTextToChordPro(rawLines, fallbackTitle) {
   const lines = repairChordLines(rawLines
     .map(l => l.replace(/[—–]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+$/, ''))
-    .filter(l => !/^\s*Page \d+\s*\/\s*\d+\s*$/i.test(l))
-    .filter(l => !/^\s*\S{12,}\s*$/.test(l) || new Set(l.trim()).size > 4)); // "*******" rules OCR'd as "khkkhk…"
+    .filter(l => !/^\s*Page \d+(\s*\/\s*|\s+)\d+\s*$/i.test(l))                     // "Page 1/2", "Page 1 2"
+    .filter(l => !/^\s*\S{12,}\s*$/.test(l) || new Set(l.trim()).size > 4)          // "*******" rules OCR'd as "khkkhk…"
+    .filter(l => !/^\s*(\d{1,4}\s+){2,}\d{1,4}\s*$/.test(l))                          // chord-diagram finger numbers
+    .filter(l => !l.trim() || (l.match(/[A-Za-z0-9]/g) || []).length > 2 || l.trim().split(/\s+/).some(isChord))); // ". - . <7"
 
   let title = '', artist = '', key = '', capo = '';
-  for (const raw of lines.slice(0, 40)) {
+  const top = lines.slice(0, 40);
+  top.forEach((raw, i) => {
     const l = raw.trim().replace(/\s+/g, ' ');
     const t = l.match(/^(.+?)\s+(?:Chords|Tabs?|Ukulele Chords|Bass Tabs?|Chords & Lyrics)\s+by\s+(.+)$/i);
-    // Trailing 1–2 character tokens are OCR noise from the UG logo at the right edge.
-    if (t && !title) { title = t[1].trim(); artist = t[2].replace(/(\s+\S{1,2})+$/, '').trim(); }
+    if (t && !title) {
+      title = t[1].trim();
+      // Trailing 1–2 character tokens are OCR noise from the UG logo at the right edge.
+      artist = t[2].replace(/(\s+\S{1,2})+$/, '').trim();
+      // A long title+artist wraps onto the next line: "…by Garth" / "Brooks".
+      const next = (top.slice(i + 1, i + 3).find(x => x.trim()) || '').trim().replace(/\s+/g, ' '); // may follow a blank line
+      const continues = /^[A-Za-z][A-Za-z&'.\- ]{1,40}$/.test(next) && next.split(' ').length <= 4 &&
+        !/^(description|difficulty|tuning|key|capo|author|chords|strumming|intro)\b/i.test(next);
+      if (artist.length <= 2) artist = continues ? next : artist;
+      else if (continues) artist += ' ' + next;
+    }
     const k = l.trim().match(/^Key:\s*([A-G][#b]?m?)\b/i);
     if (k && !key) key = k[1];
     const c = l.trim().match(/^Capo:\s*(.+)$/i);
     if (c && !capo) capo = c[1].replace(/\s*fret.*$/i, '');
-  }
+  });
 
   // UG puts chord diagrams / strumming patterns before the song; the song starts at the first [Section].
   let start = lines.findIndex(l => /^\s*\[[^\]]+\]\s*$/.test(l));

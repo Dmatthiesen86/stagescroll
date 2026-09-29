@@ -13,7 +13,8 @@ const lineNotes = line => [
   ...(line.match(/\([^)]*\)/g) || []).filter(m => !isChord(m.slice(1, -1))),
   ...[...line.matchAll(/\[([^\]]+)\]/g)].filter(m => !isChord(m[1])).map(m => `(${m[1]})`),
 ];
-const withoutNotes = line => line.replace(/\(([^)]*)\)/g, (m, x) => (isChord(x) ? m : ' '.repeat(m.length)))
+const withoutNotes = line => line.replace(/\*/g, ' ')              // footnote marks: "G* C**"
+  .replace(/\(([^)]*)\)/g, (m, x) => (isChord(x) ? m : ' '.repeat(m.length)))
   .replace(/\[([^\]]+)\]/g, (m, x) => (isChord(x) ? x.padEnd(m.length) : ' '.repeat(m.length)));
 
 // Chord names printed so close together they ran into one word: "ABmG" → "A Bm G". Only when the
