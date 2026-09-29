@@ -38,7 +38,8 @@ export function chartBars(parsed) {
 
 // Section headers as people actually write them: "[Chorus]", "Verse 1:", "Verse 1:(Male)",
 // "Bridge (spoken)", "[Chorus – heavier]", "Final Chorus / Outro", even "[Verse 1 –" unclosed.
-const SECTION_WORD = /^(intro|verse|pre-?chorus|chorus|post-?chorus|bridge|hook|outro|interlude|refrain|breakdown|instrumental|final chorus|final|spoken|rap|tag|coda)(\s*\d+)?\s*(.*)$/i;
+// Also "1st Chorus:", "2nd Chorus", "Last bridge:" (So Long).
+const SECTION_WORD = /^(?:(?:1st|2nd|3rd|\d+th|first|second|third|last)\s+)?(intro|verse|pre-?chorus|chorus|post-?chorus|bridge|hook|outro|interlude|refrain|breakdown|instrumental|final chorus|final|spoken|rap|tag|coda)(\s*\d+)?\s*(.*)$/i;
 function sectionHeader(line) {
   const clean = s => {
     const t = s.replace(/[[\]]/g, '').replace(/\s*:\s*/g, ' ').replace(/\s+/g, ' ').replace(/[\s–—:-]+$/, '').trim();
