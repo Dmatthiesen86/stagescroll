@@ -36,17 +36,34 @@ export function chartBars(parsed) {
   return bars;
 }
 
-// Pasted lyrics → [{ label, kind, lines: [text] }]. Blank lines split sections; "[Chorus]" labels them.
+// Section headers as people actually write them: "[Chorus]", "Verse 1:", "Verse 1:(Male)",
+// "Bridge (spoken)", "[Chorus – heavier]", "Final Chorus / Outro", even "[Verse 1 –" unclosed.
+const SECTION_WORD = /^(intro|verse|pre-?chorus|chorus|post-?chorus|bridge|hook|outro|interlude|refrain|breakdown|instrumental|final chorus|final|spoken|rap|tag|coda)(\s*\d+)?\s*(.*)$/i;
+function sectionHeader(line) {
+  const clean = s => {
+    const t = s.replace(/[[\]]/g, '').replace(/\s*:\s*/g, ' ').replace(/\s+/g, ' ').replace(/[\s–—:-]+$/, '').trim();
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  };
+  const br = line.match(/^\[([^\]]*)\]?$/);
+  if (br && br[1].trim() && !isChord(br[1].trim())) return clean(br[1]);
+  const m = line.match(SECTION_WORD);
+  if (m && line.length <= 70 && (!m[3] || /^[:(\-–—/]/.test(m[3]))) return clean(line);
+  return null;
+}
+
+// Pasted lyrics → [{ label, kind, lines: [text] }]. Headers start sections; in unlabelled lyrics,
+// blank lines split sections (inside a labelled section they're just stanza breaks).
 export function parseLyrics(text) {
   const sections = [];
   let cur = null;
-  const open = label => { cur = { label, lines: [] }; sections.push(cur); };
+  const open = (label, explicit) => { cur = { label, explicit, lines: [] }; sections.push(cur); };
   for (const raw of text.replace(/\r\n?/g, '\n').split('\n')) {
     const line = raw.replace(/\[([^\]]*)\]/g, (m, c) => (isChord(c.trim()) ? '' : m)).replace(/\s+/g, ' ').trim();
-    const hdr = line.match(/^\[([^\]]+)\]$/) || line.match(/^\{(?:c|comment):\s*(.+)\}$/i);
-    if (hdr) { open(hdr[1].trim()); continue; }
-    if (!line || /^\{.*\}$/.test(line)) { if (cur && cur.lines.length) cur = null; continue; }
-    if (!cur) open('');
+    const cmt = line.match(/^\{(?:c|comment):\s*(.+)\}$/i);
+    const hdr = cmt ? cmt[1].trim() : sectionHeader(line);
+    if (hdr) { open(hdr, true); continue; }
+    if (!line || /^\{.*\}$/.test(line)) { if (cur && cur.lines.length && !cur.explicit) cur = null; continue; }
+    if (!cur) open('', false);
     cur.lines.push(line);
   }
   let verse = 0;
