@@ -148,6 +148,26 @@ function lev(a, b) {
 
 const FILLER = /^(\||x\d+|\d+x|N\.?C\.?|-+|%)$/i;
 
+// Bar-chart rows ("| C  | C  | G  |") OCR badly: the bar glues onto the bold chord ("lc", "Jc", "[6",
+// "/I6") and C/G come out as "¢c" / "6". Returns the repaired row, or null if it isn't one.
+function repairBarLine(l) {
+  if (!/[|]/.test(l) && !/^\s*[lJ]c\b/.test(l)) return null;
+  if (l.trim().split(/\s+/).every(t => isChord(t) || FILLER.test(t))) return null; // already fine; keep its spacing
+  const out = [];
+  for (const t of l.trim().split(/\s+/)) {
+    const m = t.match(/^([|lJI[\/]*)(.*?)(\|?)$/);
+    let [, bar, name, end] = m;
+    if (/^(¢c?|Cc|c|€)$/.test(name)) name = 'C';
+    else if (name === '6') name = 'G';
+    if (name && !isChord(name) && !FILLER.test(name)) return null;
+    if (bar) out.push('|');
+    if (name) out.push(name);
+    if (end) out.push('|');
+  }
+  const chords = out.filter(t => t !== '|').length;
+  return chords >= 2 && out.filter(t => t === '|').length >= 2 ? out.join('  ') : null;
+}
+
 function repairChordLines(lines) {
   const known = new Map(); // chord -> count
   for (const l of lines) {
@@ -159,6 +179,7 @@ function repairChordLines(lines) {
     if (isChord(t) || FILLER.test(t)) return t;
     if (isNoiseToken(t)) return '';                                  // OCR speck on a chord line
     if (t === '€') return 'C';
+    if (isChord(t.replace(/é/g, '6'))) return t.replace(/é/g, '6');   // "Amé/C" → "Am6/C"
     const dbl = t.match(/^([A-G])([a-g])$/);
     if (dbl && dbl[2].toUpperCase() === dbl[1]) return dbl[1];      // "Cc" → "C"
     let best = null, bestScore = Infinity;
@@ -172,6 +193,8 @@ function repairChordLines(lines) {
   return lines.map(l => {
     const toks = [...l.matchAll(/\S+/g)];
     if (!toks.length) return l;
+    const bars = repairBarLine(l);
+    if (bars) return bars;
     const valid = toks.filter(m => isChord(m[0]) || FILLER.test(m[0])).length;
     // "Cc" (a bold C misread) counts toward the line being mostly chords — "Cc  F  Cc" in O Holy Night —
     // but not toward it needing no repair.
@@ -211,7 +234,13 @@ function groupTabs(lines) {
     while (out.length && out[out.length - 1].trim() && isJunk(out[out.length - 1])) block.unshift(out.pop());
     const prev = out[out.length - 1];
     if (prev && prev.trim() && isChordBars(prev)) block.unshift(out.pop());
-    out.push('{start_of_tab}', ...block, '{end_of_tab}');
+    // Tab printed as a picture often OCRs into letter soup ("G| =m=rmmmmnne=872"). That's no use on
+    // stage, so keep just its chord rows and point to the PDF.
+    const staff = block.filter(l => !isChordBars(l)).join('');
+    const letters = (staff.match(/[A-Za-z]/g) || []).length, marks = (staff.match(/[-0-9]/g) || []).length;
+    const staffLines = block.some(l => /^\s*[A-Ga-g€8][b#]?\s?[|\]]/.test(l));   // "e|", "Eb|", "€]"
+    if (staffLines && letters > 20 && letters > marks * 0.6) out.push(...block.filter(isChordBars), '{comment: Tab riff - see the original PDF}');
+    else out.push('{start_of_tab}', ...block, '{end_of_tab}');
     i = j - 1;
   }
   return out;
@@ -224,7 +253,8 @@ function ugTextToChordPro(rawLines, fallbackTitle) {
     .filter(l => !/^\s*Page \d+(\s*\/\s*|\s+)\d+\s*$/i.test(l))                     // "Page 1/2", "Page 1 2"
     .filter(l => !/^\s*\S{12,}\s*$/.test(l) || new Set(l.trim()).size > 4)          // "*******" rules OCR'd as "khkkhk…"
     .filter(l => !/^\s*(\d{1,4}\s+){2,}\d{1,4}\s*$/.test(l))                          // chord-diagram finger numbers
-    .filter(l => !l.trim() || (l.match(/[A-Za-z0-9]/g) || []).length > 2 || l.trim().split(/\s+/).some(isChord))); // ". - . <7"
+    .filter(l => !l.trim() || (l.match(/[A-Za-z0-9]/g) || []).length > 2 ||           // ". - . <7"
+      l.trim().split(/\s+/).some(t => isChord(t) || /^N\.?C\.?$/i.test(t) || /^([A-G])\1$/i.test(t))));        // but keep a lone bold C read as "Cc"
 
   let title = '', artist = '', key = '', capo = '';
   const top = lines.slice(0, 40);
@@ -232,7 +262,8 @@ function ugTextToChordPro(rawLines, fallbackTitle) {
     const l = raw.trim().replace(/\s+/g, ' ');
     const t = l.match(/^(.+?)\s+(?:Chords|Tabs?|Ukulele Chords|Bass Tabs?|Chords & Lyrics)\s+by\s+(.+)$/i);
     if (t && !title) {
-      title = t[1].trim();
+      // A leading "I" OCRs as "|" or "l": "| Will Follow You…", "lll Be" (I'll Be).
+      title = t[1].trim().replace(/^[|l](?=\s)/, 'I').replace(/^lll\b/, "I'll");
       // Trailing 1–2 character tokens are OCR noise from the UG logo at the right edge.
       artist = t[2].replace(/(\s+\S{1,2})+$/, '').trim();
       // A long title+artist wraps onto the next line: "…by Garth" / "Brooks".

@@ -787,8 +787,9 @@ function viewPerform(songIds, startIdx, set) {
     const n = song.transpose || 0;
     // The sheet's own {capo} means its chords are already shapes for that fret. Display shift =
     // transpose (changes the sounding key) + sheet capo − chosen capo (changes only the shapes).
-    const { sheetCapo, capo, shift } = capoState();
-    const flats = parsed.meta.key ? keyPrefersFlats(parsed.meta.key, shift) : null;
+    // {key} is the key you hear (UG: "Key: Eb" with capo 3 and C shapes), so the shapes are in key + n − capo.
+    const { capo, shift } = capoState();
+    const flats = parsed.meta.key ? keyPrefersFlats(parsed.meta.key, n - capo) : null;
     const next = set && idx < ids.length - 1 ? store.getSong(ids[idx + 1]) : null;
     sheet.innerHTML = renderSheet(parsed, { transpose: shift, flats }) + `
       <div class="endcard">${next
@@ -815,7 +816,7 @@ function viewPerform(songIds, startIdx, set) {
     const m = parsed.meta;
     $('#pTitle').textContent = song.title;
     $('#pSub').textContent = [song.artist,
-      m.key && `Key ${transposeChord(m.key, n + sheetCapo, !!keyPrefersFlats(m.key, n + sheetCapo))}${n ? ` (${n > 0 ? '+' : ''}${n})` : ''}`,
+      m.key && `Key ${transposeChord(m.key, n, !!keyPrefersFlats(m.key, n))}${n ? ` (${n > 0 ? '+' : ''}${n})` : ''}`,
       capo && `Capo ${capo}`, m.tempo && `${m.tempo} bpm`].filter(Boolean).join(' · ');
     if (!player.running) showPos();
     if (keepPlace) { stage.scrollTop = ratio * Math.max(1, stage.scrollHeight - stage.clientHeight); pos = null; }
