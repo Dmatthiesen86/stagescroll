@@ -195,12 +195,17 @@ function repairChordLines(lines) {
     if (!toks.length) return l;
     const bars = repairBarLine(l);
     if (bars) return bars;
-    const valid = toks.filter(m => isChord(m[0]) || FILLER.test(m[0])).length;
+    // Footnote stars ride along: "D*  Cc  D*" → "D*  C  D*".
+    const valid = toks.filter(m => isChord(m[0].replace(/\*+$/, '')) || FILLER.test(m[0])).length;
     // "Cc" (a bold C misread) counts toward the line being mostly chords — "Cc  F  Cc" in O Holy Night —
     // but not toward it needing no repair.
-    const likely = valid + toks.filter(m => /^([A-G])\1$/i.test(m[0])).length;
+    const likely = valid + toks.filter(m => /^([A-G])\1\**$/i.test(m[0])).length;
     if (valid === toks.length || likely < toks.length / 2) return l;
-    const fixed = toks.map(m => fix(m[0]));
+    const fixed = toks.map(m => {
+      const [, t, star] = m[0].match(/^(.*?)(\**)$/);
+      const x = fix(t || m[0]);
+      return x === null ? null : x + (t ? star : '');
+    });
     if (fixed.some(f => f === null)) return l;
     let out = '';
     toks.forEach((m, i) => { out = out.padEnd(m.index) + (out.length > m.index ? ' ' : '') + fixed[i]; });
@@ -211,16 +216,21 @@ function repairChordLines(lines) {
 // ---- Tab blocks
 // OCR mangles guitar tab (long dash runs), so tab areas are boxed as {start_of_tab} blocks:
 // shown monospaced for reference, and kept out of the lyrics that voice follow listens for.
-const isChordBars = l => l.trim().split(/\s+/).every(t => isChord(t) || t === '|'); // "| C  Cmaj7 | F |"
+const isChordBars = l => l.trim().split(/\s+/).every(t => isChord(t.replace(/\*+$/, '')) || t === '|'); // "| C  Cmaj7 | F |", "E*  B"
 // A line that's mostly words is lyrics, even with dashes in it — UG writes held syllables as
 // "so----orry" (The Scientist).
 const wordy = l => (l.match(/[A-Za-z]/g) || []).length > 0.4 * l.replace(/\s/g, '').length && /[a-z]{3}/.test(l);
-const isTabby = l => !isChordBars(l) && ((l.match(/\|/g) || []).length >= 2 || (/-{3,}/.test(l) && !wordy(l)) || /\d\s*&\s*\d/.test(l));
+// A tab string label, with the bar often OCR'd as "]" or "l": "e|", "Eb|", "B]", "Al ===" (but not "All").
+const STRING_LABEL = /^\s*[A-Ga-g€8][b#]?\s?[|\]lI](?![A-Za-z])/;
+const isTabby = l => !isChordBars(l) && ((l.match(/\|/g) || []).length >= 2 || (/-{3,}/.test(l) && !wordy(l)) ||
+  /\d\s*&\s*\d/.test(l) || STRING_LABEL.test(l));
+// A tab line with letters tab doesn't use (h p b s r t v x are techniques) is OCR soup.
+const soupy = l => (l.replace(STRING_LABEL, '').replace(/[xX]\d+|\d+[xX]/g, '').match(/[ac-gi-oquwyzA-Z]/g) || []).length >= 4;
 function isJunk(l) {
   const toks = l.trim().split(/\s+/).filter(Boolean);
   if (!toks.length) return false;
   const odd = toks.filter(t => !/^[A-Za-z][a-z']*[,.!?]?$/.test(t) || !/[aeiouy]/i.test(t)).length;
-  return odd / toks.length >= 0.4 && !isChord(toks[0]);
+  return odd / toks.length >= 0.4 && !isChord(toks[0].replace(/\*+$/, '')) && !/^\s*\[[^\]]+\]\s*$/.test(l); // never a [Section]
 }
 
 function groupTabs(lines) {
@@ -238,8 +248,9 @@ function groupTabs(lines) {
     // stage, so keep just its chord rows and point to the PDF.
     const staff = block.filter(l => !isChordBars(l)).join('');
     const letters = (staff.match(/[A-Za-z]/g) || []).length, marks = (staff.match(/[-0-9]/g) || []).length;
-    const staffLines = block.some(l => /^\s*[A-Ga-g€8][b#]?\s?[|\]]/.test(l));   // "e|", "Eb|", "€]"
-    if (staffLines && letters > 20 && letters > marks * 0.6) out.push(...block.filter(isChordBars), '{comment: Tab riff - see the original PDF}');
+    const staffLines = block.some(l => STRING_LABEL.test(l) || /-{2,}\d|\d-{2,}/.test(l));
+    const garbled = (letters > 20 && letters > marks * 0.6) || block.some(l => !isChordBars(l) && soupy(l));
+    if (staffLines && garbled) out.push(...block.filter(isChordBars), '{comment: Tab riff - see the original PDF}');
     else out.push('{start_of_tab}', ...block, '{end_of_tab}');
     i = j - 1;
   }
@@ -247,9 +258,11 @@ function groupTabs(lines) {
 }
 
 // ---- Ultimate Guitar specific clean-up
-function ugTextToChordPro(rawLines, fallbackTitle) {
+export function ugTextToChordPro(rawLines, fallbackTitle) {
   const lines = repairChordLines(rawLines
-    .map(l => l.replace(/[—–]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+$/, ''))
+    .map(l => l.replace(/^\s*\]([A-Z][A-Za-z0-9 -]*\])\s*$/, '[$1')                     // "]Verse 1]"
+      .replace(/(?<![\w-])0(?=[a-z]+\b)/g, m => (/--|\||\d-\d|00/.test(l) ? m : 'O'))           // "0f a phone call" (not tab "0h|" or "0-0h")
+      .replace(/[—–]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+$/, ''))
     .filter(l => !/^\s*Page \d+(\s*\/\s*|\s+)\d+\s*$/i.test(l))                     // "Page 1/2", "Page 1 2"
     .filter(l => !/^\s*\S{12,}\s*$/.test(l) || new Set(l.trim()).size > 4)          // "*******" rules OCR'd as "khkkhk…"
     .filter(l => !/^\s*(\d{1,4}\s+){2,}\d{1,4}\s*$/.test(l))                          // chord-diagram finger numbers
