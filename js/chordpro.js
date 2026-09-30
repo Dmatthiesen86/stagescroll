@@ -21,7 +21,7 @@ const withoutNotes = line => line.replace(/\*/g, ' ')              // footnote m
 // whole run splits into chords and has 2+ capitals, so a word like "Cab" is left alone.
 const splitGlued = t => {
   if ((t.match(/[A-G]/g) || []).length < 2 || /[H-Z]/.test(t)) return null;
-  const parts = t.split(/(?=[A-G](?![^/]*\/[A-G]$))/).filter(Boolean);
+  const parts = t.split(/(?=[A-G])/).filter(Boolean); // a bass note after "/" is re-joined below
   const merged = [];
   for (const p of parts) (merged.length && merged[merged.length - 1].endsWith('/') ? merged.push(merged.pop() + p) : merged.push(p));
   return merged.length > 1 && merged.every(isChord) ? merged : null;

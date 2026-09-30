@@ -220,8 +220,8 @@ const isChordBars = l => l.trim().split(/\s+/).every(t => isChord(t.replace(/\*+
 // A line that's mostly words is lyrics, even with dashes in it — UG writes held syllables as
 // "so----orry" (The Scientist).
 const wordy = l => (l.match(/[A-Za-z]/g) || []).length > 0.4 * l.replace(/\s/g, '').length && /[a-z]{3}/.test(l);
-// A tab string label, with the bar often OCR'd as "]" or "l": "e|", "Eb|", "B]", "Al ===" (but not "All").
-const STRING_LABEL = /^\s*[A-Ga-g€8][b#]?\s?[|\]lI](?![A-Za-z])/;
+// A tab string label, with the bar often OCR'd as "]", "l" or "==": "e|", "Eb|", "B]", "Al ===" (but not "All").
+const STRING_LABEL = /^\s*[A-Ga-g€8][b#]?\s?(?:[|\]lI]|={2,})(?![A-Za-z])/;           // also "Bb ===", "B==r"
 const isTabby = l => !isChordBars(l) && ((l.match(/\|/g) || []).length >= 2 || (/-{3,}/.test(l) && !wordy(l)) ||
   /\d\s*&\s*\d/.test(l) || STRING_LABEL.test(l));
 // A tab line with letters tab doesn't use (h p b s r t v x are techniques) is OCR soup.
@@ -276,7 +276,7 @@ export function ugTextToChordPro(rawLines, fallbackTitle) {
     const t = l.match(/^(.+?)\s+(?:Chords|Tabs?|Ukulele Chords|Bass Tabs?|Chords & Lyrics)\s+by\s+(.+)$/i);
     if (t && !title) {
       // A leading "I" OCRs as "|" or "l": "| Will Follow You…", "lll Be" (I'll Be).
-      title = t[1].trim().replace(/^[|l](?=\s)/, 'I').replace(/^lll\b/, "I'll");
+      title = t[1].trim().replace(/^[|l](?=\s)/, 'I').replace(/\s\|(?=\s)/g, ' I').replace(/^lll\b/, "I'll");
       // Trailing 1–2 character tokens are OCR noise from the UG logo at the right edge.
       artist = t[2].replace(/(\s+\S{1,2})+$/, '').trim();
       // A long title+artist wraps onto the next line: "…by Garth" / "Brooks".
