@@ -2,12 +2,12 @@
 // text layer are rendered and run through OCR (Tesseract, bundled so it works offline).
 // Either way, words are placed back on a character grid from their positions on the page,
 // which recreates the chords-above-lyrics layout for plainToChordPro().
-import { plainToChordPro, isChord, isNoiseToken } from './chordpro.js';
+import { plainToChordPro, isChord, isNoiseToken, unglueChords } from './chordpro.js';
 import { isChordifyPdf, chordifyToChordPro } from './chordify.js';
 
 const VENDOR = new URL('./vendor/', import.meta.url).href;
-const OCR_SCALE = 3;
-export let lastRawLines = null; // ~30px text height on a letter/A4 page — Tesseract's sweet spot
+const OCR_SCALE = 3; // ~30px text height on a letter/A4 page — Tesseract's sweet spot
+export let lastRawLines = null, lastSpots = []; // for troubleshooting imports
 
 export async function pdfToChordPro(file, onProgress = () => {}) {
   onProgress('Opening PDF…');
@@ -17,6 +17,7 @@ export async function pdfToChordPro(file, onProgress = () => {}) {
   const doc = await task.promise;
   const lines = [];
   let ocr = null;
+  lastSpots = [];
   try {
     const firstTexts = (await (await doc.getPage(1)).getTextContent()).items.map(i => i.str || '');
     if (isChordifyPdf(firstTexts)) {
@@ -86,7 +87,6 @@ async function ocrLines(worker, page) {
   // 'print' intent renders without waiting on animation frames, so it can't stall if the screen is backgrounded.
   await page.render({ canvasContext: ctx, viewport: vp, intent: 'print' }).promise;
   const { data } = await worker.recognize(canvas, {}, { blocks: true });
-  canvas.width = canvas.height = 0; // free memory promptly on phones
 
   const rows = [];
   for (const block of data.blocks || []) {
@@ -99,7 +99,98 @@ async function ocrLines(worker, page) {
       }
     }
   }
+  try { await recoverMissedChords(worker, canvas, rows); }
+  finally { canvas.width = canvas.height = 0; } // free memory promptly on phones
   return gridLines(rows.sort((a, b) => a.y - b.y));
+}
+
+// Tesseract tends to skip a lone bold letter in open space — the "C" in "G   F   C   Dm", or a whole
+// line holding just "C". So look for ink on chord lines (and ink bands with no line at all) that no
+// recognised word covers, and read each of those spots on its own as a single chord name.
+const chordish = t => isChord(t.replace(/\*+$/, '')) || /^([A-G])\1$/i.test(t);
+async function recoverMissedChords(worker, canvas, rows) {
+  const W = canvas.width, H = canvas.height;
+  const px = canvas.getContext('2d').getImageData(0, 0, W, H).data;
+  const dark = (x, y) => px[(y * W + x) * 4] < 140;   // grey page furniture ("Page 1/3") stays out
+  const words = rows.flatMap(r => r.words);
+  const widths = words.filter(w => w.text.length >= 2).map(w => (w.x1 - w.x0) / w.text.length).sort((a, b) => a - b);
+  const charW = widths[widths.length >> 1] || 20;
+  const lineH = rows.map(r => r.h).sort((a, b) => a - b)[rows.length >> 1] || 30;
+
+  // Runs of inked columns between y0 and y1, split where the gap is wider than about half a character.
+  const blobs = (y0, y1) => {
+    const out = [];
+    let start = -1, last = -1;
+    for (let x = 0; x < W; x++) {
+      let ink = false;
+      for (let y = y0; y < y1 && !ink; y++) ink = dark(x, y);
+      if (ink) { if (start < 0) start = x; last = x; }
+      else if (start >= 0 && x - last > charW * 0.6) { out.push([start, last]); start = -1; }
+    }
+    if (start >= 0) out.push([start, last]);
+    return out.filter(([a, b]) => b - a >= charW * 0.3);     // specks aren't chords
+  };
+
+  const spots = [];
+  const covered = (r, a, b) => r.words.some(w => w.x0 - 4 <= b && w.x1 + 4 >= a);
+  for (const r of rows) {
+    const toks = r.words.map(w => w.text.trim());
+    if (toks.filter(chordish).length < Math.max(1, toks.length * 0.6)) continue;  // not a chord line ("Key: F" isn't)
+    const y0 = Math.max(0, r.y), y1 = Math.min(H, r.y + r.h);
+    for (const [a, b] of blobs(y0, y1)) if (!covered(r, a, b)) spots.push({ row: r, a, b, y0, y1 });
+    // A token on a chord line with no chord letter in it is usually a misread bold chord: "[", "[5", "c",
+    // "(4". Tokens that do have one ("DGD", "Cc") are left to the text repairs, which do better.
+    const misread = t => !/[A-G]/.test(t) && !/^[|%x\d=*-]+$/i.test(t) && !/[a-z]{3,}/.test(t);
+    for (const w of r.words) if (!chordish(w.text.trim()) && misread(w.text.trim())) spots.push({ row: r, word: w, a: w.x0, b: w.x1, y0, y1 });
+  }
+  // Ink bands that Tesseract returned no line for at all.
+  let band = null;
+  const bands = [];
+  for (let y = 0; y <= H; y++) {
+    let ink = false;
+    if (y < H) for (let x = 0; x < W && !ink; x += 2) ink = dark(x, y);
+    if (ink) { if (!band) band = { y0: y }; band.y1 = y + 1; }
+    else if (band && y - band.y1 > 2) { bands.push(band); band = null; }
+  }
+  for (const bd of bands) {
+    const h = bd.y1 - bd.y0;
+    if (h < lineH * 0.4 || h > lineH * 1.6) continue;
+    if (rows.some(r => r.y < bd.y1 && r.y + r.h > bd.y0)) continue;
+    const row = { y: bd.y0, h, words: [], fresh: true };
+    for (const [a, b] of blobs(bd.y0, bd.y1)) spots.push({ row, a, b, y0: bd.y0, y1: bd.y1 });
+  }
+  lastSpots.push(...spots);
+  lastSpots.push(...spots);
+  if (!spots.length || spots.length > 80) return;       // nothing missed, or not a chord sheet
+
+  // Each spot is copied onto its own white card with a wide margin — Tesseract reads a lone letter far
+  // better with space around it than cropped tight against its neighbours.
+  const card = document.createElement('canvas');
+  const read = async (s, psm) => {
+    const m = 30, w = s.b - s.a + 3, h = s.y1 - s.y0 + 2;
+    card.width = w + 2 * m; card.height = h + 2 * m;
+    const c = card.getContext('2d');
+    c.fillStyle = '#fff'; c.fillRect(0, 0, card.width, card.height);
+    c.drawImage(canvas, s.a - 1, s.y0 - 1, w, h, m, m, w, h);
+    await worker.setParameters({ tessedit_pageseg_mode: psm });
+    const { data } = await worker.recognize(card);
+    return (data.text || '').replace(/\s+/g, '');
+  };
+  await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGabdgijmsu#/0123456789+()*' });
+  try {
+    for (const s of spots) {
+      let t = await read(s, '8');                                                  // one word: "Cmaj7"
+      if (!chordish(t) && s.b - s.a < charW * 1.6) t = await read(s, '10');        // one character: "C"
+      s.read = t;
+      if (/^([A-G])\1$/i.test(t)) t = t[0].toUpperCase();
+      if (!t || !chordish(t)) continue;
+      if (s.word) { s.word.text = t; continue; }
+      s.row.words.push({ text: t, x0: s.a, x1: s.b, y: s.y0, h: s.y1 - s.y0 });
+      if (s.row.fresh && !rows.includes(s.row)) rows.push(s.row);
+    }
+  } finally {
+    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+  }
 }
 
 // Place words on a monospace grid using their x positions, and turn big vertical gaps into
@@ -180,6 +271,9 @@ function repairChordLines(lines) {
     if (isNoiseToken(t)) return '';                                  // OCR speck on a chord line
     if (t === '€') return 'C';
     if (isChord(t.replace(/é/g, '6'))) return t.replace(/é/g, '6');   // "Amé/C" → "Am6/C"
+    // Two chords one space apart OCR as one word: "CG" is C then G — not a misspelt G.
+    const split = unglueChords(t);
+    if (split !== t) return split;
     const dbl = t.match(/^([A-G])([a-g])$/);
     if (dbl && dbl[2].toUpperCase() === dbl[1]) return dbl[1];      // "Cc" → "C"
     let best = null, bestScore = Infinity;
@@ -262,6 +356,8 @@ export function ugTextToChordPro(rawLines, fallbackTitle) {
   const lines = repairChordLines(rawLines
     .map(l => l.replace(/^\s*\]([A-Z][A-Za-z0-9 -]*\])\s*$/, '[$1')                     // "]Verse 1]"
       .replace(/(?<![\w-])0(?=[a-z]+\b)/g, m => (/--|\||\d-\d|00/.test(l) ? m : 'O'))           // "0f a phone call" (not tab "0h|" or "0-0h")
+      .replace(/=(?=[A-G])/g, '= ')                                                        // "C  =A" capo tables
+      .replace(/'11\b/g, "'ll").replace(/\b01d\b/g, 'Old')                                 // "I'11", "01d friend"
       .replace(/[—–]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+$/, ''))
     .filter(l => !/^\s*Page \d+(\s*\/\s*|\s+)\d+\s*$/i.test(l))                     // "Page 1/2", "Page 1 2"
     .filter(l => !/^\s*\S{12,}\s*$/.test(l) || new Set(l.trim()).size > 4)          // "*******" rules OCR'd as "khkkhk…"
